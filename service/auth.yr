@@ -1,0 +1,64 @@
+object JWTClaims {
+  sub:   String,
+  email: String,
+  role:  String,
+  exp:   Int,
+  iat:   Int,
+}
+
+fn jwt_sign(claims: JWTClaims, secret: String) -> String effect [Crypto, JSON] {
+  let header_obj = Header { alg: "HS256", typ: "JWT" }
+  let header = Crypto.base64url_encode(JSON.encode(header_obj))
+  let payload_obj = Payload {
+    sub:   claims.sub,
+    email: claims.email,
+    role:  claims.role,
+    exp:   claims.exp,
+    iat:   claims.iat,
+  }
+  let payload = Crypto.base64url_encode(JSON.encode(payload_obj))
+  let signing_input = header + "." + payload
+  let sig = Crypto.base64url_encode(
+    Crypto.hmac_sha256(secret, signing_input)
+  )
+  signing_input + "." + sig
+}
+
+fn jwt_verify(token: String, secret: String) -> Option effect [Crypto, JSON, Time] {
+  let parts = split(token, ".")
+  if len(parts) != 3 { return Option.None }
+
+  let signing_input = parts[0] + "." + parts[1]
+  let expected_sig = Crypto.base64url_encode(
+    Crypto.hmac_sha256(secret, signing_input)
+  )
+
+  if !Crypto.constant_time_eq(expected_sig, parts[2]) {
+    return Option.None
+  }
+
+  let payload_json = Crypto.base64url_decode(parts[1])
+  let claims = JSON.decode(payload_json)
+
+  if claims.exp < Time.now_unix() { return Option.None }
+
+  Option.Some(value: JWTClaims {
+    sub:   claims.sub,
+    email: claims.email,
+    role:  claims.role,
+    exp:   claims.exp,
+    iat:   claims.iat,
+  })
+}
+
+fn jwt_make(sub: String, email: String, role: String,
+            secret: String, ttl_seconds: Int) -> String effect [Crypto, JSON, Time] {
+  let now = Time.now_unix()
+  jwt_sign(JWTClaims {
+    sub:   sub,
+    email: email,
+    role:  role,
+    exp:   Time.add(now, ttl_seconds),
+    iat:   now,
+  }, secret)
+}

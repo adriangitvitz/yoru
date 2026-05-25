@@ -1,0 +1,37 @@
+actor RateLimiter {
+  state tokens:     Int
+  state max_tokens: Int
+  state rpm:        Int
+  state last_ms:    Int
+
+  receive Allow -> Bool {
+    let now_ms    = Time.now_ms()
+    let elapsed   = now_ms - self.last_ms
+    let refill    = (elapsed * self.rpm) / 60000
+    if refill > 0 {
+      self.tokens  = min(self.max_tokens, self.tokens + refill)
+      self.last_ms = now_ms
+    }
+    if self.tokens > 0 {
+      self.tokens -= 1
+      true
+    } else {
+      false
+    }
+  }
+
+  receive Reset {
+    self.tokens  = self.max_tokens
+    self.last_ms = Time.now_ms()
+  }
+}
+
+fn make_rate_limiter(rpm: Int) -> Actor effect [Time] {
+  let now = Time.now_ms()
+  spawn RateLimiter(
+    tokens:     rpm,
+    max_tokens: rpm,
+    rpm:        rpm,
+    last_ms:    now
+  )
+}

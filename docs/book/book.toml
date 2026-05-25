@@ -1,0 +1,27 @@
+[book]
+title = "The Yoru Language"
+authors = ["Adrian Najera"]
+description = "A beginner-friendly guide to the Yoru programming language."
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/adriangitvitz/yoru"
+edit-url-template = "https://github.com/adriangitvitz/yoru/edit/main/docs/book/{path}"
+additional-css = []
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 1
+boost-paragraph = 1
+expand = true
+heading-split-level = 3

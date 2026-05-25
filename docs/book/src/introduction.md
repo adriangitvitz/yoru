@@ -47,6 +47,3 @@ removed.
 
 - [Install Yoru](./getting-started/installation.md) — five minutes.
 - [Hello, Yoru](./getting-started/hello-yoru.md) — your first program.
-- The full design rationale lives in `docs/SPECS.md`. The compact reference
-  is the source of practical usage; `docs/USAGE.md` is a pointer back
-  here from anyone who used the pre-book reference.

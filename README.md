@@ -1,6 +1,6 @@
 # Yoru
 
-<img width="1280" height="640" alt="yoru_agent" src="https://github.com/user-attachments/assets/6ea81dfa-0259-4917-8f95-f5992704171e" />
+<img width="2560" height="2560" alt="yoru_agent" src="https://github.com/user-attachments/assets/6ea81dfa-0259-4917-8f95-f5992704171e" />
 
 A statically typed programming language for backend services, ETL pipelines, and LLM agent orchestration. Tools, agents, MCP servers, supervised actors, and HTTP services are first-class language primitives rather than libraries.
 

@@ -24,10 +24,10 @@ func main() {
 		}
 	case "run":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: yoru run <file.yr>")
+			fmt.Fprintln(os.Stderr, "usage: yoru run <file.yr> [args...]")
 			code = 1
 		} else {
-			code = runCmd(os.Args[2])
+			code = runCmd(os.Args[2], os.Args[3:])
 		}
 	case "repl":
 		code = replCmd(os.Stdin, os.Stdout, os.Stderr)
@@ -40,7 +40,7 @@ func main() {
 		}
 	case "build":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: yoru build --target <mcp|http> [--output <path>] <source.yr>")
+			fmt.Fprintln(os.Stderr, "usage: yoru build --target <mcp|http|cli> [--output <path>] <source.yr>")
 			code = 1
 		} else {
 			code = buildCmd(os.Args[2:])

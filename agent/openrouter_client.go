@@ -14,17 +14,13 @@ import (
 
 const openRouterAPIURL = "https://openrouter.ai/api/v1/chat/completions"
 
-// OpenRouterClient implements LLMClient via the OpenRouter aggregator.
 type OpenRouterClient struct {
 	apiKey     string
 	httpClient *http.Client
-	// Referer/Title are OpenRouter-recommended attribution headers; both
-	// are optional but improve attribution on the OpenRouter dashboard.
-	Referer string
-	Title   string
+	Referer    string
+	Title      string
 }
 
-// NewOpenRouterClient reads OPENROUTER_API_KEY from the environment.
 func NewOpenRouterClient() *OpenRouterClient {
 	return &OpenRouterClient{
 		apiKey:     os.Getenv("OPENROUTER_API_KEY"),
@@ -34,8 +30,6 @@ func NewOpenRouterClient() *OpenRouterClient {
 	}
 }
 
-// Complete sends a completion request to OpenRouter, translating between
-// Yoru's Anthropic-style envelope and OpenAI's chat-completions format.
 func (c *OpenRouterClient) Complete(req CompletionRequest) (CompletionResponse, error) {
 	apiReq := buildOpenAIRequest(req)
 
@@ -91,23 +85,23 @@ type openAIMessage struct {
 	Role       string           `json:"role"`
 	Content    string           `json:"content,omitempty"`
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"` // for role=tool
-	Name       string           `json:"name,omitempty"`         // for role=tool
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Name       string           `json:"name,omitempty"`
 }
 
 type openAIToolCall struct {
 	ID       string             `json:"id"`
-	Type     string             `json:"type"` // always "function"
+	Type     string             `json:"type"`
 	Function openAIToolFunction `json:"function"`
 }
 
 type openAIToolFunction struct {
 	Name      string `json:"name"`
-	Arguments string `json:"arguments"` // JSON string
+	Arguments string `json:"arguments"`
 }
 
 type openAITool struct {
-	Type     string               `json:"type"` // "function"
+	Type     string               `json:"type"`
 	Function openAIToolDefinition `json:"function"`
 }
 
@@ -119,6 +113,13 @@ type openAIToolDefinition struct {
 
 type openAIResponse struct {
 	Choices []openAIChoice `json:"choices"`
+	Usage   openAIUsage    `json:"usage"`
+}
+
+type openAIUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 type openAIChoice struct {
@@ -169,10 +170,6 @@ func buildOpenAIRequest(req CompletionRequest) openAIRequest {
 	return out
 }
 
-// translateUserMessages expands one Yoru user message into one or more
-// OpenAI messages: each tool_result block becomes a role=tool message
-// (OpenAI requires one per tool_call_id), and any text blocks coalesce
-// into a single role=user message.
 func translateUserMessages(msg Message) []openAIMessage {
 	var out []openAIMessage
 	var textParts strings.Builder
@@ -196,8 +193,6 @@ func translateUserMessages(msg Message) []openAIMessage {
 	return out
 }
 
-// translateAssistantMessage maps Yoru assistant content (text + tool_use)
-// into the OpenAI assistant format (content + tool_calls).
 func translateAssistantMessage(msg Message) openAIMessage {
 	out := openAIMessage{Role: "assistant"}
 	for _, b := range msg.Content {
@@ -237,7 +232,6 @@ func convertOpenAIResponse(resp openAIResponse) CompletionResponse {
 		})
 	}
 
-	// Map OpenAI finish_reason to Yoru/Anthropic stop_reason vocabulary.
 	stop := "end_turn"
 	switch choice.FinishReason {
 	case "tool_calls":
@@ -246,5 +240,12 @@ func convertOpenAIResponse(resp openAIResponse) CompletionResponse {
 		stop = "max_tokens"
 	}
 
-	return CompletionResponse{Content: blocks, StopReason: stop}
+	return CompletionResponse{
+		Content:    blocks,
+		StopReason: stop,
+		Usage: TokenUsage{
+			InputTokens:  resp.Usage.PromptTokens,
+			OutputTokens: resp.Usage.CompletionTokens,
+		},
+	}
 }

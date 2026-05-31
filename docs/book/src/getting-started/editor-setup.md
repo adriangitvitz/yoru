@@ -43,7 +43,7 @@ production-grade Yoru highlight via tree-sitter requires:
 
 This is roughly two to three days of work for a thorough grammar. The
 shipped vim-regex syntax is correct, fast, and works for every Yoru
-construct documented in this book — start there. Upgrade to tree-sitter
+construct documented in this book - start there. Upgrade to tree-sitter
 only if you need semantic features like incremental folding or
 language-aware text objects.
 

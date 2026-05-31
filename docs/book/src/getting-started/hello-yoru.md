@@ -61,5 +61,5 @@ Run it the same way. Notice that:
 - Lists use square brackets; iteration uses `for ... in ...`.
 
 That's enough to read the rest of the book. The next chapter walks the full
-syntax tour. Before that, take five minutes to learn the [CLI](./cli.md) —
+syntax tour. Before that, take five minutes to learn the [CLI](./cli.md) -
 you'll use `yoru check` and `yoru fmt` constantly.

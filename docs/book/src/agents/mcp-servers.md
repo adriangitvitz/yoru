@@ -1,7 +1,7 @@
 # MCP servers
 
 An **MCP server** exposes Yoru tools to any
-[Model Context Protocol](https://modelcontextprotocol.io/) client —
+[Model Context Protocol](https://modelcontextprotocol.io/) client
 Claude Desktop, `mcp-cli`, custom integrations. The Yoru compiler emits
 a self-contained binary that speaks JSON-RPC 2.0 over stdio (or HTTP).
 
@@ -102,7 +102,7 @@ serves it under `tools/list`. The model sees:
 
 You never write this by hand; it follows the Yoru type declaration.
 (`Tool.schema()` inside Yoru returns the same data with the field
-spelled `input_schema` — see [Tools](./tools.md). The MCP build
+spelled `input_schema` - see [Tools](./tools.md). The MCP build
 converts on the way out.)
 
 ## Effects in an MCP context

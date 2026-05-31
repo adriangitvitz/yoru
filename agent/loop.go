@@ -3,16 +3,18 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 )
 
-// Run drives the reasoning loop and returns the final text response. When
-// OutputSchema is set, the reply must parse as JSON matching it; validation
-// failures retry up to RetryInvalidOutput times before returning an error
-// whose message contains "agent_output_invalid" (the interpreter bridge
-// surfaces this as a typed Result.Err).
+// Run executes the agent's reasoning loop and returns the final text response.
+// If OutputSchema is set, the final reply must parse as JSON matching the
+// schema. After RetryInvalidOutput exhausted retries, returns an error
+// containing "agent_output_invalid".
 func (a *Agent) Run(userPrompt string) (string, error) {
+	a.LastUsage = TokenUsage{}
+	a.LastTurns = 0
 	messages := []Message{
 		{Role: "user", Content: []ContentBlock{{Type: "text", Text: userPrompt}}},
 	}
@@ -32,24 +34,37 @@ func (a *Agent) Run(userPrompt string) (string, error) {
 		system = augmentSystemPromptWithSchema(system, a.Config.OutputSchema)
 	}
 
-	// Default 2 retries (3 total calls); negative disables.
 	retriesLeft := a.Config.RetryInvalidOutput
 	if a.Config.OutputSchema != nil && a.Config.RetryInvalidOutput == 0 {
 		retriesLeft = 2
 	}
 
 	for turn := 0; turn < maxTurns; turn++ {
+		tools := a.Config.Tools
+		if a.Config.RefreshTools != nil {
+			if fresh := a.Config.RefreshTools(); fresh != nil {
+				tools = fresh
+			}
+		}
 		req := CompletionRequest{
 			Model:     a.Config.Model,
 			System:    system,
 			Messages:  messages,
-			Tools:     a.Config.Tools,
+			Tools:     tools,
 			MaxTokens: maxTokens,
 		}
 
 		resp, err := a.Client.Complete(req)
 		if err != nil {
 			return "", fmt.Errorf("LLM error on turn %d: %w", turn, err)
+		}
+		a.LastTurns++
+		a.LastUsage.InputTokens += resp.Usage.InputTokens
+		a.LastUsage.OutputTokens += resp.Usage.OutputTokens
+		if a.Debug {
+			fmt.Fprintf(os.Stderr, "[agent] turn=%d in=%d out=%d cumulative_in=%d cumulative_out=%d\n",
+				a.LastTurns, resp.Usage.InputTokens, resp.Usage.OutputTokens,
+				a.LastUsage.InputTokens, a.LastUsage.OutputTokens)
 		}
 
 		messages = append(messages, Message{Role: "assistant", Content: resp.Content})
@@ -85,8 +100,6 @@ func (a *Agent) Run(userPrompt string) (string, error) {
 	return "", fmt.Errorf("agent exceeded max_turns (%d)", maxTurns)
 }
 
-// augmentSystemPromptWithSchema appends a JSON-shape instruction as a
-// provider-agnostic fallback for structured output.
 func augmentSystemPromptWithSchema(system string, schema *OutputSchema) string {
 	schemaJSON, err := json.MarshalIndent(schema, "", "  ")
 	if err != nil {
@@ -99,8 +112,6 @@ func augmentSystemPromptWithSchema(system string, schema *OutputSchema) string {
 
 var fencedJSON = regexp.MustCompile("(?s)```(?:json)?\\s*(\\{.*?\\})\\s*```")
 
-// validateAgainstSchema parses text as JSON (stripping markdown fences) and
-// checks every Required field is present. Returns the cleaned JSON on success.
 func validateAgainstSchema(text string, schema *OutputSchema) (string, error) {
 	candidate := strings.TrimSpace(text)
 	if m := fencedJSON.FindStringSubmatch(candidate); len(m) == 2 {
@@ -140,6 +151,15 @@ func (a *Agent) processToolCalls(content []ContentBlock) []ContentBlock {
 			} else {
 				resultText = result
 			}
+
+			if !isError && a.Config.RefreshTools != nil {
+				a.Config.RefreshTools()
+			}
+		}
+
+		if a.Debug {
+			fmt.Fprintf(os.Stderr, "[agent] tool=%s input=%s\n", block.ToolName, truncate(block.Input, 200))
+			fmt.Fprintf(os.Stderr, "[agent] result(isError=%v)=%s\n", isError, truncate(resultText, 200))
 		}
 
 		results = append(results, ContentBlock{
@@ -151,6 +171,13 @@ func (a *Agent) processToolCalls(content []ContentBlock) []ContentBlock {
 	}
 
 	return results
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "...[truncated]"
 }
 
 func extractText(content []ContentBlock) string {

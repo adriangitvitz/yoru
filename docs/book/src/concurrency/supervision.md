@@ -1,6 +1,6 @@
 # Supervision
 
-A long-running actor will eventually crash — a tool call will time out, a
+A long-running actor will eventually crash - a tool call will time out, a
 parser will choke, an LLM will hallucinate a malformed tool argument. In
 the actor model, crashing is **a normal event**, not an emergency. A
 supervisor decides what to do next.
@@ -12,7 +12,7 @@ Two builtins, both backed by the same supervisor runtime:
 | `Supervisor.new(...)` | You want **explicit** start/stop and to supervise a mix of **actors and agents**. |
 | `supervise_agents(...)` | Short, agent-only convenience that **auto-starts** and returns a name→ref map. |
 
-## `Supervisor.new` — general-purpose
+## `Supervisor.new` - general-purpose
 
 ```yoru
 actor Counter { state n: Int = 0; receive Inc { self.n += 1 } }
@@ -20,12 +20,12 @@ actor Logger  { state lines: Int = 0; receive Log { self.lines += 1 } }
 
 fn main() {
   let sup = Supervisor.new(
-    ["Counter", "Logger"],   // child names — actor or agent declarations
+    ["Counter", "Logger"],   // child names - actor or agent declarations
     "one_for_one",           // strategy
     5,                        // max_restarts per window
     30                        // window in seconds
   )
-  sup.start()                 // explicit lifecycle — children spawn here
+  sup.start()                 // explicit lifecycle - children spawn here
 
   let kids = sup.children()   // Map<name, ActorRef>
   let c = kids.get("Counter")
@@ -41,7 +41,7 @@ fn main() {
 
 - `Supervisor.new` does **not** auto-start. `children()` returns an empty
   map until `start()` runs.
-- Child names can be **either actors or agents** — the lookup tries
+- Child names can be **either actors or agents** - the lookup tries
   `actor` declarations first, then `agent`. Unknown names fail closed
   with `Result.Err{kind: "supervisor_bad_args"}`.
 - `.start()` returns `Result.Ok(nil)` on success.
@@ -53,7 +53,7 @@ fn main() {
 - `.add_child("Name")` dynamically registers and spawns a new child of
   the named declaration; the supervisor's restart policy applies.
 
-## `supervise_agents` — agent-only convenience
+## `supervise_agents` - agent-only convenience
 
 ```yoru
 agent HistoryAgent     { model: "anthropic/claude-sonnet-4.5" system: "..." tools: [WikiSummary] }

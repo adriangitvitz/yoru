@@ -40,7 +40,7 @@ let same  = Crypto.constant_time_eq(mac, expected)
 | `Time.format(ts, layout)` | Format a timestamp.                         |
 | `Time.parse(s, layout)`  | Parse a timestamp.                           |
 
-For deterministic time in tests, install a custom `Time` provider — see
+For deterministic time in tests, install a custom `Time` provider - see
 [Built-in effects](../effects/built-in-effects.md).
 
 ## `Log`
@@ -61,12 +61,12 @@ Log.info_fields("user_created", UserCtx { id: user.id, email: user.email })
 ```
 
 The `obj` argument must be an object value. Both `TypeName { ... }` and
-bare `{ ... }` literals work. Only string-valued fields are emitted —
+bare `{ ... }` literals work. Only string-valued fields are emitted -
 non-string fields are silently dropped.
 
 ### Output format
 
-Lines are **always JSON** — one object per line on stderr by default,
+Lines are **always JSON** - one object per line on stderr by default,
 with `level`, `msg`, `ts`, and any context/one-shot fields merged in.
 There is no `LOG_FORMAT` toggle.
 

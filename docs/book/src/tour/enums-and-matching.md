@@ -74,11 +74,11 @@ just works.
 | Literal | `0`, `"x"`, `true` |
 | Wildcard | `_` |
 | Binding | `x` (any lowercase identifier; binds the whole subject) |
-| Variant constructor | `Active(score)`, `Inactive(reason)` — fields bound in declaration order |
+| Variant constructor | `Active(score)`, `Inactive(reason)` - fields bound in declaration order |
 | Variant with no fields | `Pending` |
-| Object destructure (shorthand) | `Point { x, y }` — binds `x` and `y` to the object's field values |
-| Object destructure (literal match) | `Point { x: 0, y: 0 }` — matches only when both fields equal the literal |
-| Object destructure (rebind) | `Point { x: a, y: b }` — binds the field's value to a different name |
+| Object destructure (shorthand) | `Point { x, y }` - binds `x` and `y` to the object's field values |
+| Object destructure (literal match) | `Point { x: 0, y: 0 }` - matches only when both fields equal the literal |
+| Object destructure (rebind) | `Point { x: a, y: b }` - binds the field's value to a different name |
 
 ## Object destructure in practice
 
@@ -95,6 +95,6 @@ fn label(p: Point) -> String {
 }
 ```
 
-If the subject is not of the named type, the arm doesn't match — so
+If the subject is not of the named type, the arm doesn't match - so
 destructure patterns also serve as type guards inside a `match` with
 mixed inputs.

@@ -23,7 +23,7 @@ service OrderAPI {
 }
 ```
 
-Run with `yoru run` — the service auto-starts on port 8080.
+Run with `yoru run` - the service auto-starts on port 8080.
 
 ## Path parameters
 
@@ -59,7 +59,7 @@ service OrderAPI {
 ```
 
 `body` arrives as a dynamic `ObjectVal`. Use `JSON.get(body, "field")`
-to pull fields, then construct your typed object explicitly — there is
+to pull fields, then construct your typed object explicitly - there is
 no automatic decoding into a named `object` type today (see
 [HTTP and JSON](../stdlib/http-and-json.md)).
 
@@ -79,7 +79,7 @@ no automatic decoding into a named `object` type today (see
 Each helper takes care of `Content-Type: application/json` for you.
 
 The `body` can be a named object, list, primitive, a map built with
-`Map.of(...)`, or a bare `{ key: value }` literal — the helper handles
+`Map.of(...)`, or a bare `{ key: value }` literal - the helper handles
 each shape and emits JSON appropriately.
 
 ## Reading values stamped by middleware
@@ -94,7 +94,7 @@ fn me(req: Request) -> Response {
 }
 ```
 
-`req.context` is always a `Map` — empty when no middleware has written
+`req.context` is always a `Map` - empty when no middleware has written
 to it. Missing keys return `nil`, so the `??` fallback handles both
 "middleware didn't run" and "middleware ran but didn't stamp this key"
 the same way. See [Middleware](./middleware.md#surfacing-values-to-handlers-via-reqcontext)

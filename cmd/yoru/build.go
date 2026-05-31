@@ -36,13 +36,13 @@ func buildCmd(args []string) int {
 		}
 	}
 
-	if target != "mcp" && target != "http" {
-		fmt.Fprintln(os.Stderr, "usage: yoru build --target <mcp|http> [--output <path>] <source.yr>")
+	if target != "mcp" && target != "http" && target != "cli" {
+		fmt.Fprintln(os.Stderr, "usage: yoru build --target <mcp|http|cli> [--output <path>] <source.yr>")
 		return 1
 	}
 
 	if sourceFile == "" {
-		fmt.Fprintln(os.Stderr, "usage: yoru build --target <mcp|http> [--output <path>] <source.yr>")
+		fmt.Fprintln(os.Stderr, "usage: yoru build --target <mcp|http|cli> [--output <path>] <source.yr>")
 		return 1
 	}
 
@@ -63,7 +63,6 @@ func buildCmd(args []string) int {
 		return 2
 	}
 
-	// GetMCPDecls / GetServiceDecls read state populated only after eval.
 	interp := interpreter.NewInterpreter()
 	_, err = interp.EvalProgram(prog)
 	if err != nil {
@@ -76,9 +75,25 @@ func buildCmd(args []string) int {
 		return buildMCP(interp, src, sourceFile, output)
 	case "http":
 		return buildHTTP(interp, src, sourceFile, output)
+	case "cli":
+		return buildCLI(src, sourceFile, output)
 	}
 
 	return 1
+}
+
+func buildCLI(src, sourceFile, output string) int {
+	if output == "" {
+		base := filepath.Base(sourceFile)
+		ext := filepath.Ext(base)
+		output = strings.TrimSuffix(base, ext)
+	}
+	templateData := struct {
+		Source string
+	}{
+		Source: escapeBackticks(src),
+	}
+	return generateAndBuild(cliMainTemplate, templateData, "yoru-cli-build-*", output, "CLI binary")
 }
 
 func buildMCP(interp *interpreter.Interpreter, src, sourceFile, output string) int {
@@ -136,7 +151,6 @@ func buildHTTP(interp *interpreter.Interpreter, src, sourceFile, output string) 
 		break
 	}
 
-	// Catch unknown handler names at build time, not first request.
 	env := interp.Env()
 	for _, route := range serviceDecl.Routes {
 		if _, ok := env.Get(route.Handler); !ok {
@@ -162,8 +176,6 @@ func buildHTTP(interp *interpreter.Interpreter, src, sourceFile, output string) 
 	return generateAndBuild(httpMainTemplate, templateData, "yoru-http-build-*", output, "HTTP server")
 }
 
-// escapeBackticks makes source safe inside a Go raw-string literal by
-// splitting backticks and concatenating: "a`b" -> "a" + "`" + "b".
 func escapeBackticks(s string) string {
 	if !strings.Contains(s, "`") {
 		return s
@@ -223,8 +235,6 @@ replace github.com/adriangitvitz/yoru => %s
 		output = filepath.Join(cwd, output)
 	}
 
-	// `go mod tidy` is needed for the temp module's go.sum to pick up
-	// stdlib's transitive deps (e.g. redis client); otherwise: "missing go.sum entry".
 	tidy := exec.Command("go", "mod", "tidy")
 	tidy.Dir = tmpDir
 	tidy.Stderr = os.Stderr
@@ -245,8 +255,6 @@ replace github.com/adriangitvitz/yoru => %s
 	return 0
 }
 
-// findYoruModPath locates the yoru module root for the generated module's
-// `replace`. Probes binary dir, conventional GOPATH, then cwd ancestry; "" on miss.
 func findYoruModPath() string {
 	exe, err := os.Executable()
 	if err == nil {
@@ -404,6 +412,63 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+}
+`
+
+const cliMainTemplate = `package main
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/adriangitvitz/yoru/agent"
+	"github.com/adriangitvitz/yoru/interpreter"
+	"github.com/adriangitvitz/yoru/parser"
+	"github.com/adriangitvitz/yoru/stdlib"
+	yoruLexer "github.com/adriangitvitz/yoru/lexer"
+)
+
+const yoruSource = ` + "`" + `{{.Source}}` + "`" + `
+
+func main() {
+	l := yoruLexer.New(yoruSource)
+	p := parser.New(l)
+	prog := p.ParseProgram()
+	if len(p.Errors()) > 0 {
+		for _, e := range p.Errors() {
+			fmt.Fprintf(os.Stderr, "parse error: %s\n", e)
+		}
+		os.Exit(1)
+	}
+
+	interp := interpreter.NewInterpreter()
+	stdlib.InstallAll(interp, os.Stderr)
+
+	if os.Getenv("OPENROUTER_API_KEY") != "" {
+		interp.SetLLMClient(agent.NewOpenRouterClient())
+	} else if os.Getenv("ANTHROPIC_API_KEY") != "" {
+		interp.SetLLMClient(agent.NewAnthropicClient())
+	}
+
+	interp.SetScriptArgs(os.Args[1:])
+
+	_, err := interp.EvalProgram(prog)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	for _, stmt := range prog.Statements {
+		fn, ok := stmt.(*parser.FnDecl)
+		if !ok || fn.Name != "main" {
+			continue
+		}
+		mainL := yoruLexer.New("main()")
+		mainP := parser.New(mainL)
+		mainProg := mainP.ParseProgram()
+		_, _ = interp.EvalProgram(mainProg)
+		return
 	}
 }
 `

@@ -47,7 +47,7 @@ let m1 = Map.of("name", "Ada", "age", 36)   // alternating k, v args
 let m2 = Map.of({ name: "Ada", age: 36 })   // single object literal
 ```
 
-Both produce the same map. Use whichever reads better at the call site —
+Both produce the same map. Use whichever reads better at the call site -
 the object-literal form is usually nicer for human-readable config.
 
 All other map operations are **methods on the map value**, not

@@ -41,12 +41,12 @@ match reply {
 `spawn AgentName()` always returns an actor reference, even when no LLM
 client is installed. If the runtime has no LLM client (e.g. neither
 `OPENROUTER_API_KEY` nor `ANTHROPIC_API_KEY` is set), the returned ref
-is a **dead-config ref** — calls to `.chat()` on it immediately return
+is a **dead-config ref**: calls to `.chat()` on it immediately return
 `Result.Err{kind: "llm_not_configured"}`. This lets you write the same
 spawn-and-chat code in any environment; only the `.chat` call site
 needs to match on the error.
 
-`.chat(prompt)` returns a `Result[String, Error]` — `Result.Ok(text)`
+`.chat(prompt)` returns a `Result[String, Error]` - `Result.Ok(text)`
 on success, `Result.Err{kind: ...}` on any failure (timeout, missing
 LLM client, model error, max-turns/budget exhaustion). Same symmetric
 shape as `.ask` on an actor; same three consumption idioms:
@@ -74,9 +74,9 @@ The blocking wait is bounded by `ChatTimeout` (120 seconds by default).
 1. The runtime sends the system prompt, the tool catalogue (JSON Schema
    for each declared tool), and the user prompt to the model.
 2. The model responds with either:
-   - **A tool call** — the runtime executes the tool, feeds the result
+   - **A tool call** - the runtime executes the tool, feeds the result
      back, and loops to step 2.
-   - **A final text message** — the runtime returns it.
+   - **A final text message** - the runtime returns it.
 3. If `max_turns` or `budget_tokens` is exceeded, the runtime returns
    `Result.Err{kind: "agent_error"}` with the reason.
 
@@ -96,8 +96,8 @@ fall back, or surface the error.
 
 ## Structured output (`output { ... }`)
 
-Agents can declare an `output { ... }` block — the same field syntax tools
-use — to demand a structured JSON response instead of free-form text. The
+Agents can declare an `output { ... }` block - the same field syntax tools
+use - to demand a structured JSON response instead of free-form text. The
 runtime auto-injects a schema instruction into the system prompt, validates
 the model's reply on each turn, and retries with a corrective message when
 the reply does not parse or misses a required field.
@@ -119,13 +119,13 @@ let c = spawn Classifier()
 match c.chat("My invoice is wrong, please refund me") {
   Err(e)   => log("classifier failed: " + e.kind)
   Ok(r)    => {
-    // r is a typed `Classifier.Output` value — access fields directly.
+    // r is a typed `Classifier.Output` value - access fields directly.
     log(r.category + " @ " + to_string(r.confidence))
   }
 }
 ```
 
-When the schema is satisfied, `.chat` resolves to `Result.Ok(<AgentName>.Output)` —
+When the schema is satisfied, `.chat` resolves to `Result.Ok(<AgentName>.Output)` -
 the JSON payload is re-tagged with the agent's name so handlers can pattern-match
 on the type just like any other object. When retries exhaust, `.chat` returns
 `Result.Err{kind: "agent_output_invalid", message: "..."}` carrying the last
@@ -141,7 +141,7 @@ flow through to the generated schema so the model sees what each field means.
 
 Because `.chat` returns `Result.Ok(<AgentName>.Output)` for any agent with
 an `output { ... }` block, agent-to-agent handoffs are just nested `match`
-expressions — and the runtime guarantees a downstream agent never sees
+expressions - and the runtime guarantees a downstream agent never sees
 malformed input from an upstream one.
 
 ```yoru
@@ -180,7 +180,7 @@ match researcher.chat(user_request) {
   Err(e)   => log("research stage failed: " + e.kind)
   Ok(plan) => match outliner.chat("Plan: " + plan.topic + " / " + plan.angle) {
     Err(e)      => log("outline stage failed: " + e.kind)
-    Ok(outline) => match writer.chat(outline.title + " — " + outline.thesis) {
+    Ok(outline) => match writer.chat(outline.title + " - " + outline.thesis) {
       Err(e)     => log("write stage failed: " + e.kind)
       Ok(brief)  => println(brief)
     }
@@ -193,28 +193,28 @@ Two properties matter here:
 **Cross-vendor contracts.** Three different model families (Anthropic /
 Google / Meta) participate, and none of them know about each other. The
 contract between them is the `output { ... }` block on each upstream
-agent — the runtime translates that into a per-provider system-prompt
+agent - the runtime translates that into a per-provider system-prompt
 augmentation, validates the reply, and re-tags the JSON as
 `<AgentName>.Output` before the downstream stage can read it.
 
 **Fail-fast on contract violations.** If any agent with an `output`
 block fails validation after its retries are exhausted, that stage
 returns `Result.Err{kind: "agent_output_invalid"}` and the `match`
-short-circuits — downstream stages never run. A weak middle link
+short-circuits - downstream stages never run. A weak middle link
 cannot poison the rest of the chain:
 
 ```
-=== Agent A (Claude) — Researcher ===
+=== Agent A (Claude) - Researcher ===
   topic: Open Source AI Project Sustainability
   ...
-=== Agent B (Llama 3.2 1B) — Outliner ===
+=== Agent B (Llama 3.2 1B) - Outliner ===
   Chain halted at B with kind: agent_output_invalid
   ✓ runtime caught malformed JSON before Agent C ever ran
 ```
 
 ## Multi-turn conversations
 
-`.chat()` is stateless from the agent's point of view — each call starts
+`.chat()` is stateless from the agent's point of view - each call starts
 a fresh reasoning loop. To maintain conversation state across turns,
 either:
 

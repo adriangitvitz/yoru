@@ -6,10 +6,7 @@ import (
 	"strings"
 )
 
-// ToolSchema is the Anthropic-compatible JSON Schema for a tool. OutputSchema
-// is informational on Anthropic but load-bearing on MCP 2024-11-05.
-// InputSchema and OutputSchema are distinct types so future fields on one
-// can't leak into the other.
+// ToolSchema is the Anthropic-compatible JSON Schema for a tool.
 type ToolSchema struct {
 	Name         string        `json:"name"`
 	Description  string        `json:"description"`
@@ -17,34 +14,34 @@ type ToolSchema struct {
 	OutputSchema *OutputSchema `json:"output_schema,omitempty"`
 }
 
-// InputSchema describes the tool's input parameters.
 type InputSchema struct {
 	Type       string                    `json:"type"`
 	Properties map[string]PropertySchema `json:"properties"`
 	Required   []string                  `json:"required"`
 }
 
-// OutputSchema describes the tool's structured return shape.
 type OutputSchema struct {
 	Type       string                    `json:"type"`
 	Properties map[string]PropertySchema `json:"properties"`
 	Required   []string                  `json:"required"`
 }
 
-// PropertySchema describes a single input property.
 type PropertySchema struct {
-	Type        string          `json:"type"`
-	Description string          `json:"description,omitempty"`
-	Items       *PropertySchema `json:"items,omitempty"`
+	Type        string                    `json:"type,omitempty"`
+	Description string                    `json:"description,omitempty"`
+	Items       *PropertySchema           `json:"items,omitempty"`
+	Properties  map[string]PropertySchema `json:"properties,omitempty"`
+	Required    []string                  `json:"required,omitempty"`
+	AnyOf       []PropertySchema          `json:"anyOf,omitempty"`
+	Enum        []string                  `json:"enum,omitempty"`
+	Const       string                    `json:"const,omitempty"`
 }
 
-// ToJSON serializes to the Anthropic API shape (`input_schema`, snake_case).
 func (ts *ToolSchema) ToJSON() ([]byte, error) {
 	return json.Marshal(ts)
 }
 
-// ToMCPJSON serializes to the MCP wire shape (`inputSchema`/`outputSchema`,
-// camelCase). Used by MCP servers and by Yoru's `Tool.schema()`.
+// ToMCPJSON serializes a ToolSchema to JSON in the MCP wire shape (camelCase keys).
 func (ts *ToolSchema) ToMCPJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Name         string        `json:"name"`
@@ -59,19 +56,35 @@ func (ts *ToolSchema) ToMCPJSON() ([]byte, error) {
 	})
 }
 
-// YoruTypeToJSONSchema converts a Yoru type expression to a JSON Schema
-// PropertySchema. Option[T] unwraps to T; optionality lives in Required.
+const DiscriminatorField = "kind"
+
+type TypeResolver interface {
+	ResolveObject(name string) ([]FieldLike, bool)
+	ResolveEnum(name string) (EnumLike, bool)
+}
+
+type EnumLike interface {
+	EnumName() string
+	EnumVariants() []EnumVariantLike
+}
+
+type EnumVariantLike interface {
+	VariantName() string
+	VariantFields() []FieldLike
+}
+
 func YoruTypeToJSONSchema(yoruType string) PropertySchema {
+	return YoruTypeToJSONSchemaWith(yoruType, nil)
+}
+
+func YoruTypeToJSONSchemaWith(yoruType string, resolver TypeResolver) PropertySchema {
 	if strings.HasPrefix(yoruType, "Option[") && strings.HasSuffix(yoruType, "]") {
-		inner := yoruType[7 : len(yoruType)-1]
-		ps := YoruTypeToJSONSchema(inner)
-		return ps
+		return YoruTypeToJSONSchemaWith(yoruType[7:len(yoruType)-1], resolver)
 	}
 
 	if strings.HasPrefix(yoruType, "[") && strings.HasSuffix(yoruType, "]") {
-		inner := yoruType[1 : len(yoruType)-1]
-		itemSchema := YoruTypeToJSONSchema(inner)
-		return PropertySchema{Type: "array", Items: &itemSchema}
+		inner := YoruTypeToJSONSchemaWith(yoruType[1:len(yoruType)-1], resolver)
+		return PropertySchema{Type: "array", Items: &inner}
 	}
 
 	switch yoruType {
@@ -83,14 +96,80 @@ func YoruTypeToJSONSchema(yoruType string) PropertySchema {
 		return PropertySchema{Type: "string"}
 	case "Bool":
 		return PropertySchema{Type: "boolean"}
-	default:
-		return PropertySchema{Type: "string"}
 	}
+
+	if resolver != nil {
+		if fields, ok := resolver.ResolveObject(yoruType); ok {
+			return objectSchema(fields, resolver)
+		}
+		if enumDecl, ok := resolver.ResolveEnum(yoruType); ok {
+			return enumSchema(enumDecl, resolver)
+		}
+	}
+
+	return PropertySchema{Type: "string"}
 }
 
-// ToolDeclLike abstracts over parser.ToolDecl so tool/ doesn't import parser.
-// ToolOutputs() returns fields from the `output { ... }` block form (empty
-// otherwise); when non-empty, FromAST emits an OutputSchema.
+func objectSchema(fields []FieldLike, resolver TypeResolver) PropertySchema {
+	props := make(map[string]PropertySchema, len(fields))
+	var required []string
+	for _, f := range fields {
+		ps := YoruTypeToJSONSchemaWith(f.FieldTypeExpr(), resolver)
+		if ann := f.FieldAnnotation(); ann != nil && ann.Name == "doc" {
+			ps.Description = ann.Value
+		}
+		props[f.FieldName()] = ps
+		if !fieldIsOptional(f) {
+			required = append(required, f.FieldName())
+		}
+	}
+	return PropertySchema{Type: "object", Properties: props, Required: required}
+}
+
+func enumSchema(decl EnumLike, resolver TypeResolver) PropertySchema {
+	variants := decl.EnumVariants()
+
+	allUnit := true
+	for _, v := range variants {
+		if len(v.VariantFields()) > 0 {
+			allUnit = false
+			break
+		}
+	}
+
+	if allUnit {
+		names := make([]string, len(variants))
+		for i, v := range variants {
+			names[i] = v.VariantName()
+		}
+		return PropertySchema{Type: "string", Enum: names}
+	}
+
+	branches := make([]PropertySchema, len(variants))
+	for i, v := range variants {
+		props := map[string]PropertySchema{
+			DiscriminatorField: {Const: v.VariantName()},
+		}
+		required := []string{DiscriminatorField}
+		for _, f := range v.VariantFields() {
+			ps := YoruTypeToJSONSchemaWith(f.FieldTypeExpr(), resolver)
+			if ann := f.FieldAnnotation(); ann != nil && ann.Name == "doc" {
+				ps.Description = ann.Value
+			}
+			props[f.FieldName()] = ps
+			if !fieldIsOptional(f) {
+				required = append(required, f.FieldName())
+			}
+		}
+		branches[i] = PropertySchema{Type: "object", Properties: props, Required: required}
+	}
+	return PropertySchema{AnyOf: branches}
+}
+
+func fieldIsOptional(f FieldLike) bool {
+	return strings.HasPrefix(f.FieldTypeExpr(), "Option[") || f.FieldHasDefault()
+}
+
 type ToolDeclLike interface {
 	ToolName() string
 	ToolDescription() string
@@ -99,7 +178,6 @@ type ToolDeclLike interface {
 	ToolOutputs() []FieldLike
 }
 
-// FieldLike abstracts over parser.Field.
 type FieldLike interface {
 	FieldName() string
 	FieldTypeExpr() string
@@ -107,14 +185,16 @@ type FieldLike interface {
 	FieldAnnotation() *AnnotationLike
 }
 
-// AnnotationLike holds annotation data.
 type AnnotationLike struct {
 	Name  string
 	Value string
 }
 
-// FromAST builds a ToolSchema from a ToolDeclLike.
 func FromAST(decl ToolDeclLike) (*ToolSchema, error) {
+	return FromASTWithResolver(decl, nil)
+}
+
+func FromASTWithResolver(decl ToolDeclLike, resolver TypeResolver) (*ToolSchema, error) {
 	if decl.ToolDescription() == "" {
 		return nil, fmt.Errorf("tool '%s' missing description", decl.ToolName())
 	}
@@ -123,17 +203,12 @@ func FromAST(decl ToolDeclLike) (*ToolSchema, error) {
 	var required []string
 
 	for _, input := range decl.ToolInputs() {
-		typeExpr := input.FieldTypeExpr()
-		ps := YoruTypeToJSONSchema(typeExpr)
-
+		ps := YoruTypeToJSONSchemaWith(input.FieldTypeExpr(), resolver)
 		if ann := input.FieldAnnotation(); ann != nil && ann.Name == "doc" {
 			ps.Description = ann.Value
 		}
-
 		props[input.FieldName()] = ps
-
-		isOptional := strings.HasPrefix(typeExpr, "Option[") || input.FieldHasDefault()
-		if !isOptional {
+		if !fieldIsOptional(input) {
 			required = append(required, input.FieldName())
 		}
 	}
@@ -151,14 +226,12 @@ func FromAST(decl ToolDeclLike) (*ToolSchema, error) {
 		oprops := make(map[string]PropertySchema)
 		var orequired []string
 		for _, out := range outputs {
-			typeExpr := out.FieldTypeExpr()
-			ps := YoruTypeToJSONSchema(typeExpr)
+			ps := YoruTypeToJSONSchemaWith(out.FieldTypeExpr(), resolver)
 			if ann := out.FieldAnnotation(); ann != nil && ann.Name == "doc" {
 				ps.Description = ann.Value
 			}
 			oprops[out.FieldName()] = ps
-			// Output fields are required by default; Option[T] is nullable.
-			if !strings.HasPrefix(typeExpr, "Option[") {
+			if !strings.HasPrefix(out.FieldTypeExpr(), "Option[") {
 				orequired = append(orequired, out.FieldName())
 			}
 		}
@@ -170,4 +243,3 @@ func FromAST(decl ToolDeclLike) (*ToolSchema, error) {
 	}
 	return ts, nil
 }
-

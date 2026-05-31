@@ -46,7 +46,7 @@ fn echo(e, msg: String) -> String {
 
 `.ask` blocks the caller until the actor produces a reply or
 `AskTimeout` (5 seconds by default) fires. The result is **always** a
-`Result` — `Ok(reply)` on success, `Err{kind: "ask_timeout"}` on
+`Result` - `Ok(reply)` on success, `Err{kind: "ask_timeout"}` on
 timeout. The symmetric shape lets `?` propagate, lets `??` provide
 fallbacks, and keeps `.ask` consistent with the rest of the language's
 fallible operations (`HTTP.get`, `DB.query_one`, `JSON.decode(..., T)`).

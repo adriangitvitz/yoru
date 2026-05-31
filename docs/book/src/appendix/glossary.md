@@ -44,7 +44,7 @@ protocol implementation (`impl T : Proto { ... }`).
 at a time, to completion. State mutation inside a `receive` body is
 race-free by construction.
 
-**MCP.** Model Context Protocol — a JSON-RPC 2.0 protocol for exposing
+**MCP.** Model Context Protocol - a JSON-RPC 2.0 protocol for exposing
 tools and resources to LLM clients. `yoru build --target mcp` produces
 a binary that speaks it.
 
@@ -53,7 +53,7 @@ a binary that speaks it.
 **Pipeline.** A typed chain of source → transforms → sink, composed
 with `|>`. May fan out with `partition: N`.
 
-**Protocol.** A behavioural contract — a set of method signatures
+**Protocol.** A behavioural contract - a set of method signatures
 implementing types must satisfy. Effect-aware.
 
 **Result.** `enum Result[T, E] { Ok(value: T) Err(error: E) }`. The
@@ -64,19 +64,19 @@ map verbs and paths to handler functions.
 
 **Supervisor.** A parent process that watches child actors and applies a
 restart strategy when they crash. Two APIs:
-`Supervisor.new(names, strategy, max_restarts, window_seconds)` — general
-purpose, supports both actor and agent children, explicit start/stop —
-and `supervise_agents(...)` — the agent-only convenience that
+`Supervisor.new(names, strategy, max_restarts, window_seconds)` - general
+purpose, supports both actor and agent children, explicit start/stop -
+and `supervise_agents(...)` - the agent-only convenience that
 auto-starts. See [Supervision](../concurrency/supervision.md).
 
 **Tool.** A typed, named unit of capability with auto-generated JSON
 Schema. Callable by agents and exposed over MCP. Tools are
-**first-class values** in Yoru — a bare tool name resolves to a `Tool`
+**first-class values** in Yoru - a bare tool name resolves to a `Tool`
 value you can pass as a function arg, store in a list or map, or
 introspect via `.name()` / `.description()` / `.input_schema()` /
 `.output_schema()`. The structured `output { ... }` block form
 validates returns at runtime and emits an `outputSchema` to the LLM.
 See [Tools](../agents/tools.md).
 
-**With-capability.** `with_capability(name, fn() => ...)` — grants a
+**With-capability.** `with_capability(name, fn() => ...)` - grants a
 runtime capability for the duration of the lambda's invocation.

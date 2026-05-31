@@ -1,6 +1,6 @@
 # Capability scoping
 
-A tool can declare a **capability** — a named permission that must be in
+A tool can declare a **capability** - a named permission that must be in
 scope at call time. Calling the tool without the capability returns
 `Result.Err{kind: "capability_denied"}`.
 
@@ -49,10 +49,10 @@ preserve outer capabilities additively.
   envelopes:
 
   ```yoru
-  // /public/* — no privileged tools
+  // /public/* - no privileged tools
   fn public_handler(req: Request) -> Response { my_agent.chat(req.body) }
 
-  // /admin/* — same agent, with admin capability lit up
+  // /admin/* - same agent, with admin capability lit up
   fn admin_handler(req: Request) -> Response {
     with_capability("admin", fn() => my_agent.chat(req.body))
   }
@@ -66,7 +66,7 @@ preserve outer capabilities additively.
 
 ## Capability names are strings
 
-Capability names are arbitrary strings — `"phi_read"`, `"admin"`,
+Capability names are arbitrary strings - `"phi_read"`, `"admin"`,
 `"billing"`, whatever you like. The convention is `snake_case`. The
 runtime does not interpret them; it just compares them.
 

@@ -55,7 +55,7 @@ Policy {
 }
 ```
 
-Anything you put in there is fair game — `.retry(3)`, `.skip`,
+Anything you put in there is fair game - `.retry(3)`, `.skip`,
 `.escalate("ops-pager")`, whatever fits the runtime you're aiming at.
 
 ## Time-unit literals
@@ -73,7 +73,7 @@ count as an `Int`**:
 | `1.5s`  | `1500`         |
 
 Recognized units: `ns`, `us`, `ms`, `s`, `m`, `h`. The suffix must
-immediately follow the number — `1seconds` lexes as `1` plus identifier
+immediately follow the number - `1seconds` lexes as `1` plus identifier
 `seconds`, not as a malformed duration.
 
 ## `back_pressure:` policy

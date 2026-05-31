@@ -43,6 +43,7 @@
 - [Tools](./agents/tools.md)
 - [Capability scoping](./agents/capability-scoping.md)
 - [Agents](./agents/agents.md)
+- [Self-minting agents](./agents/self-minting.md)
 - [MCP servers](./agents/mcp-servers.md)
 - [Configuring the LLM client](./agents/llm-client.md)
 
@@ -58,6 +59,8 @@
 - [HTTP and JSON](./stdlib/http-and-json.md)
 - [Crypto, Time, Log](./stdlib/crypto-time-log.md)
 - [DB](./stdlib/db.md)
+- [FS and Path](./stdlib/fs-and-path.md)
+- [Fuzzy and Diff](./stdlib/text-algorithms.md)
 - [Optional providers](./stdlib/optional-providers.md)
 
 # Appendix

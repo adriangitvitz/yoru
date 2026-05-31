@@ -1,6 +1,6 @@
 # Builtins reference
 
-Functions always in scope — no import required.
+Functions always in scope - no import required.
 
 ## I/O
 
@@ -9,6 +9,7 @@ Functions always in scope — no import required.
 | `println(v)`  | Print `v` (any type) plus a newline.            |
 | `print(v)`    | Print `v` without a newline.                    |
 | `env(name)`   | Read environment variable `name`. Returns `""` if unset. |
+| `args()`      | List of CLI arguments passed after the script filename. Empty list when invoked outside `yoru run` or when no extras were supplied. |
 
 ## Conversion
 
@@ -54,6 +55,15 @@ let h = sqrt(pow(3.0, 2.0) + pow(4.0, 2.0))   // 5
 `uppercase`, `lowercase`, `trim`, `split`, `replace`, `starts_with`,
 `ends_with`, `contains`, `index_of`, `char_at`.
 
+`replace_regex(content, pattern, replacement)` - regex find/replace.
+`pattern` is a Go regexp. `replacement` may use `$1`, `$2`, … to
+reference capture groups. Invalid patterns return
+`Result.Err{kind: "regex_invalid"}` rather than a runtime exception.
+
+```yoru
+replace_regex("hello", "(h)(e)(l)(l)(o)", "$5$4$3$2$1")   // "olleh"
+```
+
 ## Maps
 
 Two **namespace** constructors:
@@ -90,20 +100,20 @@ Everything else is a **method on the byte value**: `b.len()`,
 
 ## Collector (pipeline sink)
 
-`Collector.collect()` — produces a list from all items reaching the sink.
+`Collector.collect()` - produces a list from all items reaching the sink.
 
 ## Capability and supervision
 
-`with_capability(name, fn() => ...)` — grant `name` for the duration of
+`with_capability(name, fn() => ...)` - grant `name` for the duration of
 the lambda.
 
-`Supervisor.new(names, strategy, max_restarts, window_seconds)` —
+`Supervisor.new(names, strategy, max_restarts, window_seconds)` -
 general-purpose supervision over actors and agents. Returns a
 `SupervisorVal` with `.start()`, `.stop()`, `.children()`,
 `.add_child(name)` methods. See
 [Supervision](../concurrency/supervision.md).
 
-`supervise_agents(names, strategy, max_restarts, window_seconds)` —
+`supervise_agents(names, strategy, max_restarts, window_seconds)` -
 agent-only convenience: builds, starts, and returns the name→ref map
 in one call.
 
@@ -129,12 +139,27 @@ See [Tools](../agents/tools.md) for the declaration form and patterns.
 `internal_error(msg)`.
 
 The `body` can be a named object, list, primitive, a map built with
-`Map.of(...)`, **or a bare `{ key: value }` literal** — bare literals
+`Map.of(...)`, **or a bare `{ key: value }` literal** - bare literals
 produce a generic `Object` value.
+
+## Runtime tool minting
+
+`define_tool(source)` - parse a Yoru source string and register any
+`tool { ... }`, `object { ... }`, or `enum { ... }` declarations it
+contains. Returns the list of tool names registered, or
+`Result.Err{kind: "define_tool_parse_failed"}` on a syntax error.
+
+Used by agents to extend their own toolkit mid-conversation. See
+[Self-minting agents](../agents/self-minting.md) for the full pattern.
+
+```yoru
+define_tool("tool Add { description: \"sum\" input { a: Int, b: Int } output: Int fn run(self, i: Add.Input) -> Int { i.a + i.b } }")
+Add.run(a: 3, b: 4)   // 7
+```
 
 ## Misc
 
-`assert(cond)` — abort if `cond` is false. Use only at startup or in
+`assert(cond)` - abort if `cond` is false. Use only at startup or in
 tests; production code should branch and return `Result.Err` instead.
 
-`hash(v)` — deterministic 64-bit hash of any value.
+`hash(v)` - deterministic 64-bit hash of any value.

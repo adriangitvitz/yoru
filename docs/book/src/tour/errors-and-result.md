@@ -59,7 +59,7 @@ let m = Map.of("name", "Ada")
 let name = m.get("missing") ?? "anonymous"
 ```
 
-The fallback is evaluated lazily — if the left side is `Ok`/some, the
+The fallback is evaluated lazily - if the left side is `Ok`/some, the
 right side is not touched.
 
 ## Pattern matching for richer recovery

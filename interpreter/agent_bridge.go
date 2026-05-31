@@ -3,6 +3,7 @@ package interpreter
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -12,15 +13,12 @@ import (
 )
 
 // ChatTimeout bounds how long agent_ref.chat(prompt) will wait for a reply.
-// Larger than AskTimeout because multi-turn LLM tool loops are slow.
 var ChatTimeout = 120 * time.Second
 
-// SetLLMClient injects the LLMClient used by agents spawned by this interpreter.
 func (interp *Interpreter) SetLLMClient(client agent.LLMClient) {
 	interp.llmClient = client
 }
 
-// evalAgentChat blocks until the agent replies; bounded by ChatTimeout.
 func (interp *Interpreter) evalAgentChat(ref *ActorRef, callArgs []parser.CallArg) Value {
 	if len(callArgs) == 0 {
 		return makeErrResult("chat_bad_args", "chat() requires a prompt argument")
@@ -39,8 +37,6 @@ func (interp *Interpreter) evalAgentChat(ref *ActorRef, callArgs []parser.CallAr
 	}
 	select {
 	case result := <-replyCh:
-		// Wrap success in Result.Ok to match .ask's shape. Pass an existing
-		// Result through (don't double-wrap llm_not_configured/agent_error).
 		if ev, isResult := result.(*EnumVal); isResult && ev.TypeName == "Result" {
 			return ev
 		}
@@ -50,13 +46,10 @@ func (interp *Interpreter) evalAgentChat(ref *ActorRef, callArgs []parser.CallAr
 	}
 }
 
-// spawnAgent starts an agent's reasoning loop and returns an ActorRef the
-// caller can `.chat(prompt)` on. Use spawnSupervisedAgent for crash callbacks.
 func (interp *Interpreter) spawnAgent(decl *parser.AgentDecl) Value {
 	return interp.spawnAgentWithCrash(decl, nil)
 }
 
-// spawnSupervisedAgent fires onCrash if the reasoning loop panics.
 func (interp *Interpreter) spawnSupervisedAgent(decl *parser.AgentDecl, onCrash func(ref *ActorRef, reason string)) *ActorRef {
 	v := interp.spawnAgentWithCrash(decl, onCrash)
 	if ref, ok := v.(*ActorRef); ok {
@@ -65,22 +58,18 @@ func (interp *Interpreter) spawnSupervisedAgent(decl *parser.AgentDecl, onCrash 
 	return nil
 }
 
-// spawnAgentWithCrash backs spawnAgent and spawnSupervisedAgent.
 func (interp *Interpreter) spawnAgentWithCrash(decl *parser.AgentDecl, onCrash func(ref *ActorRef, reason string)) Value {
 	if interp.llmClient == nil {
-		// Return a dead ref whose .chat always replies Result.Err{llm_not_configured};
-		// keeps `let g = spawn X(); g.chat(...)` uniform without an outer match.
 		return spawnDeadAgent(decl.Name)
 	}
 
-	// Build a tool registry from the agent's declared tool references.
 	reg := tool.NewRegistry()
 	for _, toolName := range decl.Tools {
 		schema := interp.GetToolSchema(toolName)
 		if schema == nil {
 			continue
 		}
-		name := toolName // capture for closure
+		name := toolName
 		_ = reg.Register(schema, func(args json.RawMessage) (string, error) {
 			return interp.InvokeToolJSON(name, args)
 		})
@@ -93,7 +82,6 @@ func (interp *Interpreter) spawnAgentWithCrash(decl *parser.AgentDecl, onCrash f
 		}
 	}
 
-	// Translate any output block into the JSON schema the loop validates.
 	var outputSchema *agent.OutputSchema
 	if len(decl.Outputs) > 0 {
 		props := make(map[string]agent.OutputProperty, len(decl.Outputs))
@@ -115,6 +103,35 @@ func (interp *Interpreter) spawnAgentWithCrash(decl *parser.AgentDecl, onCrash f
 		}
 	}
 
+	declaredSet := make(map[string]struct{}, len(decl.Tools))
+	for _, name := range decl.Tools {
+		declaredSet[name] = struct{}{}
+	}
+
+	refresh := func() []*tool.ToolSchema {
+		out := make([]*tool.ToolSchema, 0, len(decl.Tools))
+		for _, name := range decl.Tools {
+			if s := interp.GetToolSchema(name); s != nil {
+				out = append(out, s)
+			}
+		}
+		for name := range interp.toolDecls {
+			if _, declared := declaredSet[name]; declared {
+				continue
+			}
+			s := interp.GetToolSchema(name)
+			if s == nil {
+				continue
+			}
+			out = append(out, s)
+			capturedName := name
+			_ = reg.Register(s, func(args json.RawMessage) (string, error) {
+				return interp.InvokeToolJSON(capturedName, args)
+			})
+		}
+		return out
+	}
+
 	ag := agent.NewAgent(agent.AgentConfig{
 		Model:              decl.Model,
 		System:             decl.System,
@@ -124,7 +141,11 @@ func (interp *Interpreter) spawnAgentWithCrash(decl *parser.AgentDecl, onCrash f
 		Temperature:        decl.Temperature,
 		OutputSchema:       outputSchema,
 		RetryInvalidOutput: decl.RetryInvalidOutput,
+		RefreshTools:       refresh,
 	}, interp.llmClient, reg)
+	if os.Getenv("YORU_AGENT_DEBUG") != "" {
+		ag.Debug = true
+	}
 
 	mailbox := make(chan ActorMessage, 256)
 	done := make(chan struct{})
@@ -135,12 +156,10 @@ func (interp *Interpreter) spawnAgentWithCrash(decl *parser.AgentDecl, onCrash f
 		Done:    done,
 	}
 
-	// runAgent uses outputs to re-tag the JSON reply as <AgentName>.Output.
 	go runAgent(ag, ref, mailbox, done, onCrash, decl.Name, decl.Outputs)
 	return ref
 }
 
-// yoruTypeToJSONType maps a Yoru type to a JSON Schema type, defaulting to "string".
 func yoruTypeToJSONType(yoruType string) string {
 	switch yoruType {
 	case "Int":
@@ -155,8 +174,6 @@ func yoruTypeToJSONType(yoruType string) string {
 	return "string"
 }
 
-// spawnDeadAgent returns an ActorRef that replies Result.Err{llm_not_configured}
-// to every chat. Fallback when SetLLMClient hasn't been called.
 func spawnDeadAgent(name string) *ActorRef {
 	mailbox := make(chan ActorMessage, 64)
 	done := make(chan struct{})
@@ -176,8 +193,6 @@ func spawnDeadAgent(name string) *ActorRef {
 	return ref
 }
 
-// runAgent drives an agent goroutine. Chat is encoded as ActorMessage with
-// Method="chat" and Args["prompt"]. Panics fire onCrash when supervised.
 func runAgent(ag *agent.Agent, ref *ActorRef, mailbox chan ActorMessage, done chan struct{}, onCrash func(*ActorRef, string), agentName string, outputs []parser.Field) {
 	defer func() {
 		r := recover()
@@ -197,7 +212,6 @@ func runAgent(ag *agent.Agent, ref *ActorRef, mailbox chan ActorMessage, done ch
 		}
 		reply, err := ag.Run(promptStr)
 		if err != nil {
-			// Surface agent_output_invalid distinctly from generic agent_error.
 			if strings.Contains(err.Error(), "agent_output_invalid") {
 				msg.ReplyCh <- makeErrResult("agent_output_invalid", err.Error())
 			} else {
@@ -205,7 +219,6 @@ func runAgent(ag *agent.Agent, ref *ActorRef, mailbox chan ActorMessage, done ch
 			}
 			continue
 		}
-		// With an output block, re-tag the validated JSON as <AgentName>.Output.
 		if len(outputs) > 0 {
 			obj, parseErr := jsonToOutputObject(reply, agentName, outputs)
 			if parseErr != nil {
@@ -220,9 +233,7 @@ func runAgent(ag *agent.Agent, ref *ActorRef, mailbox chan ActorMessage, done ch
 	}
 }
 
-// jsonToOutputObject parses validated agent JSON into a typed ObjectVal so
-// handlers can `r.field` directly. Extra (undeclared) fields pass through.
-func jsonToOutputObject(jsonText, agentName string, outputs []parser.Field) (*ObjectVal, error) {
+func jsonToOutputObject(jsonText, agentName string, _ []parser.Field) (*ObjectVal, error) {
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(jsonText), &raw); err != nil {
 		return nil, err
@@ -234,7 +245,6 @@ func jsonToOutputObject(jsonText, agentName string, outputs []parser.Field) (*Ob
 	return &ObjectVal{TypeName: agentName + ".Output", Fields: fields}, nil
 }
 
-// jsonValueToYoruValue maps a parsed JSON value into the closest Yoru Value.
 func jsonValueToYoruValue(v any) Value {
 	switch x := v.(type) {
 	case string:

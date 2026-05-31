@@ -26,7 +26,7 @@ service Api {
   expired): short-circuits with `401 Unauthorized` and
   `WWW-Authenticate: Bearer realm="api"`.
 
-The handler reads claims dynamically — every field carried in the
+The handler reads claims dynamically - every field carried in the
 token is available by key:
 
 ```yoru
@@ -64,7 +64,7 @@ the exact format `JWT.verify` accepts.
 
 The token format is **internally compatible**: tokens minted via
 `jwt_sign` / `jwt_make` verify cleanly via `JWT.verify`. The signature
-is `base64url(hex(HMAC-SHA256(secret, signing_input)))` — the extra
+is `base64url(hex(HMAC-SHA256(secret, signing_input)))` - the extra
 hex layer is a Yoru-specific quirk. If you need strict RFC 7519
 compatibility (e.g. to interoperate with another service), generate
 the token outside Yoru and decode it inside a handler instead of
@@ -89,7 +89,7 @@ Two forms:
 
 Empty bucket → `429 Too Many Requests` with body `{"error":"rate_limited"}`.
 
-Both refill continuously — no background timer, no per-bucket
+Both refill continuously - no background timer, no per-bucket
 goroutine. A fresh bucket starts full (capacity = `n` tokens), so a
 client gets one full second of burst before throttling.
 
@@ -101,13 +101,13 @@ client gets one full second of burst before throttling.
 | Stop a single client from monopolising the service | `per_ip` |
 | Both: process cap + per-tenant fairness | `[RateLimit.rps(1000), RateLimit.per_ip(100)]` |
 
-You can stack them — middleware runs in declaration order, so the global
+You can stack them - middleware runs in declaration order, so the global
 cap rejects first, then the per-IP cap.
 
 ### Per-key limiting (not yet built-in)
 
 `RateLimit.per_key(n, key_fn)` from earlier doc drafts is not
-implemented today. The token-bucket primitive is generic — if you need
+implemented today. The token-bucket primitive is generic - if you need
 per-tenant or per-token bucketing, register a custom middleware in Go
 that derives the key however you like and uses the same
 `tokenBucket` shape. See [Middleware](./middleware.md#writing-your-own-middleware).

@@ -95,7 +95,7 @@ object User { id: Int, name: String }
 // 1. Explicit second argument
 let a = JSON.decode("{\"id\":1,\"name\":\"Ada\"}", "User")
 
-// 2. Let-binding type annotation — equivalent to the above
+// 2. Let-binding type annotation - equivalent to the above
 let b: User = JSON.decode("{\"id\":1,\"name\":\"Ada\"}")
 ```
 
@@ -114,7 +114,7 @@ match u {
 }
 ```
 
-The annotation form is **passive** — if the RHS already produced a
+The annotation form is **passive** - if the RHS already produced a
 typed ObjectVal (e.g. `let u: User = OtherType { ... }`), the
 annotation does **not** clobber the existing tag. Use the explicit
 two-arg form when you need the coercion to happen unconditionally.

@@ -31,7 +31,7 @@ let s: String = to_string(123)  // any value -> String
 `to_string` works on every Yoru value, including objects, lists, and
 `Result`. It is your friend when wiring `println` for debugging.
 
-`to_string` of a whole-valued `Float` (e.g. `5.0`) prints as `5` — the
+`to_string` of a whole-valued `Float` (e.g. `5.0`) prints as `5` - the
 trailing `.0` is dropped. Pass through `float(...)` and format yourself
 if you need the fractional part preserved.
 

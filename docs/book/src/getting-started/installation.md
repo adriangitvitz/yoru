@@ -32,7 +32,7 @@ You should see something like `yoru 0.1.0 (Phase 0)`.
 ## Optional: environment variables
 
 These are only needed if you want to run agents against a real LLM. Yoru
-runs perfectly well without them — agents just return
+runs perfectly well without them - agents just return
 `Result.Err{kind: "llm_not_configured"}` until you set one.
 
 | Variable             | When to set it                                       |

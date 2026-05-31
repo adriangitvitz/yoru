@@ -1,7 +1,7 @@
 # DB
 
 The `DB` effect provides query, execute, and transaction operations.
-The default runtime ships an in-memory driver — fine for prototyping
+The default runtime ships an in-memory driver - fine for prototyping
 and tests. For production, plug in a Postgres / MySQL / SQLite provider
 in Go before launching the interpreter.
 
@@ -25,7 +25,7 @@ let one = DB.query_one("SELECT * FROM users WHERE id = $1", [id])
 let n = DB.exec("UPDATE users SET active = false WHERE id = $1", [id])
 ```
 
-## `DB.transaction(fn)` — transactional closures
+## `DB.transaction(fn)` - transactional closures
 
 `DB.transaction` accepts a **Yoru closure** and runs it inside a fresh
 transaction. The return shape is always a `Result`:
@@ -74,7 +74,7 @@ interp.EvalSourceInto(source)
 ```
 
 `WithInterp(interp)` is required for the Yoru-closure form of
-`DB.transaction` to work — without it the provider rejects
+`DB.transaction` to work - without it the provider rejects
 `*FunctionVal` with a clear error message. `stdlib.InstallAll` wires
 it automatically for the default in-memory driver.
 

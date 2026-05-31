@@ -62,7 +62,7 @@ let d = SQS.receive_message(url)
 SQS.delete_message(url, d.ack_id)
 ```
 
-At-least-once delivery via visibility timeout — if you don't
+At-least-once delivery via visibility timeout - if you don't
 `delete_message` before the timeout fires, the message reappears.
 
 ## `Kafka`

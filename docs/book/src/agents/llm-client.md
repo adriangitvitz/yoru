@@ -9,7 +9,7 @@ Yoru selects an LLM client from environment variables at startup.
 
 If neither is set, agents still spawn but every `.chat(...)` returns
 `Result.Err{kind: "llm_not_configured"}`. Nothing else in the language is
-affected — tools, pipelines, actors, services, and HTTP all work
+affected - tools, pipelines, actors, services, and HTTP all work
 normally.
 
 ## Quick start with OpenRouter
@@ -21,7 +21,7 @@ yoru run my_agent.yr
 
 OpenRouter is the path of least resistance because one key gets you
 access to dozens of models (Claude, GPT, Gemini, Llama, ...). Switch
-models by changing the `model:` field on the agent — no code changes.
+models by changing the `model:` field on the agent - no code changes.
 
 ## Quick start with Anthropic direct
 

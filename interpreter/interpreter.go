@@ -7,6 +7,7 @@ import (
 	"maps"
 	"math"
 	"os"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -27,41 +28,43 @@ type EvalResult struct {
 
 // Interpreter evaluates a type-checked Yoru AST.
 type Interpreter struct {
-	env            *Environment
-	effectStack    *EffectStack
-	runtimeEffects map[string]bool // effect namespaces recognized by this interpreter
-	objectDecls    map[string]*parser.ObjectDecl
-	enumDecls      map[string]*parser.EnumDecl
-	actorDecls     map[string]*parser.ActorDecl
-	pipelineDecls  map[string]*parser.PipelineDecl
-	toolDecls      map[string]*parser.ToolDecl
-	agentDecls     map[string]*parser.AgentDecl
-	mcpDecls       map[string]*parser.MCPDecl
-	serviceDecls   map[string]*parser.ServiceDecl
-	protocolDecls  map[string]*parser.ProtocolDecl
-	implDecls      []*parser.ImplDecl
-	// Import system
-	fileReader  FileReader
-	baseDir     string
-	moduleCache map[string]*Module
-	importStack []string
-	// Export tracking
+	env                *Environment
+	effectStack        *EffectStack
+	runtimeEffects     map[string]bool
+	objectDecls        map[string]*parser.ObjectDecl
+	enumDecls          map[string]*parser.EnumDecl
+	actorDecls         map[string]*parser.ActorDecl
+	pipelineDecls      map[string]*parser.PipelineDecl
+	toolDecls          map[string]*parser.ToolDecl
+	agentDecls         map[string]*parser.AgentDecl
+	mcpDecls           map[string]*parser.MCPDecl
+	serviceDecls       map[string]*parser.ServiceDecl
+	protocolDecls      map[string]*parser.ProtocolDecl
+	implDecls          []*parser.ImplDecl
+	fileReader         FileReader
+	baseDir            string
+	moduleCache        map[string]*Module
+	importStack        []string
 	hasExplicitExports bool
 	exportedNames      map[string]bool
-	// LLM client used by spawned agents. Inject via SetLLMClient.
-	llmClient agent.LLMClient
-	// Tool gating capability stack. Pushed by `with_capability(name, fn)`,
-	// consulted by evalToolRun.
-	capabilityStack []string
+	llmClient          agent.LLMClient
+	capabilityStack    []string
+	fsSessionStack     []*FSSession
+	scriptArgs         []string
 }
 
-// defaultRuntimeEffects returns the built-in effect namespaces. Fresh map per call.
+// SetScriptArgs records the CLI arguments that follow the script filename.
+// Yoru code reads them via the `args()` builtin.
+func (interp *Interpreter) SetScriptArgs(a []string) {
+	interp.scriptArgs = a
+}
+
 func defaultRuntimeEffects() map[string]bool {
 	return map[string]bool{
 		"HTTP": true, "DB": true, "IO": true, "LLM": true, "Log": true,
 		"Agent": true, "Stream": true, "Spawn": true, "Metric": true, "Clock": true,
 		"Crypto": true, "Time": true, "JSON": true, "Redis": true, "Rabbit": true, "SQS": true, "Kafka": true,
-		"Subprocess": true,
+		"Subprocess": true, "FS": true, "Path": true, "Fuzzy": true, "Diff": true,
 	}
 }
 
@@ -99,8 +102,7 @@ func (interp *Interpreter) EvalSourceInto(src string) (*EvalResult, error) {
 	return interp.EvalProgram(prog)
 }
 
-// EvalSourceRaw is EvalSource without typechecking; useful for programs
-// using builtins the typechecker doesn't know about.
+// EvalSourceRaw is like EvalSource but skips typechecking.
 func (interp *Interpreter) EvalSourceRaw(src string) (*EvalResult, error) {
 	l := lexer.New(src)
 	p := parser.New(l)
@@ -192,8 +194,6 @@ func (interp *Interpreter) Reset() {
 	interp.registerBuiltinEnums()
 }
 
-// Pass 1: Collect declarations
-
 func (interp *Interpreter) collectDeclarations(prog *parser.Program) {
 	for _, stmt := range prog.Statements {
 		switch s := stmt.(type) {
@@ -227,7 +227,6 @@ func (interp *Interpreter) collectDeclarations(prog *parser.Program) {
 		case *parser.ImplDecl:
 			interp.implDecls = append(interp.implDecls, s)
 		case *parser.EffectDecl:
-			// Per-interpreter effect registration.
 			interp.runtimeEffects[s.Name] = true
 		case *parser.ExportStatement:
 			interp.hasExplicitExports = true
@@ -236,7 +235,6 @@ func (interp *Interpreter) collectDeclarations(prog *parser.Program) {
 			}
 			interp.collectSingleDeclaration(s.Inner)
 		case *parser.ImportStatement:
-			// handled by ProcessImports
 		}
 	}
 }
@@ -314,8 +312,6 @@ func nameOfDecl(stmt parser.Statement) string {
 	}
 	return ""
 }
-
-// Builtins
 
 func (interp *Interpreter) registerBuiltins() {
 	interp.env.Set("print", &BuiltinVal{Name: "print", Fn: func(args []Value) (Value, error) {
@@ -592,7 +588,6 @@ func (interp *Interpreter) registerBuiltins() {
 			if s > e {
 				return &ListVal{Elements: nil}, nil
 			}
-			// Copy the slice to avoid sharing
 			copied := make([]Value, e-s)
 			copy(copied, v.Elements[s:e])
 			return &ListVal{Elements: copied}, nil
@@ -644,7 +639,6 @@ func (interp *Interpreter) registerBuiltins() {
 		for k := range obj.Fields {
 			elems = append(elems, &StringVal{V: k})
 		}
-		// Sort for deterministic output
 		sort.Slice(elems, func(i, j int) bool {
 			return elems[i].(*StringVal).V < elems[j].(*StringVal).V
 		})
@@ -658,7 +652,6 @@ func (interp *Interpreter) registerBuiltins() {
 		if !ok {
 			return nil, fmt.Errorf("append() first argument must be a List")
 		}
-		// Create new list to avoid mutation
 		newElems := make([]Value, len(list.Elements)+1)
 		copy(newElems, list.Elements)
 		newElems[len(list.Elements)] = args[1]
@@ -696,7 +689,6 @@ func (interp *Interpreter) registerBuiltins() {
 		}
 		return nil, fmt.Errorf("abs() requires Int argument")
 	}})
-	// List.of — used in pipeline sources
 	interp.env.Set("List", &ObjectVal{
 		TypeName: "List",
 		Fields: map[string]Value{
@@ -710,6 +702,7 @@ func (interp *Interpreter) registerBuiltins() {
 			}},
 		},
 	})
+
 	interp.env.Set("Bytes", &ObjectVal{
 		TypeName: "Bytes",
 		Fields: map[string]Value{
@@ -749,7 +742,6 @@ func (interp *Interpreter) registerBuiltins() {
 			}},
 		},
 	})
-	// Collector.collect — used in pipeline sinks
 	interp.env.Set("Collector", &ObjectVal{
 		TypeName: "Collector",
 		Fields: map[string]Value{
@@ -760,6 +752,7 @@ func (interp *Interpreter) registerBuiltins() {
 			}},
 		},
 	})
+
 	interp.env.Set("join", &BuiltinVal{Name: "join", Fn: func(args []Value) (Value, error) {
 		if len(args) != 2 {
 			return nil, fmt.Errorf("join() takes 2 arguments, got %d", len(args))
@@ -805,6 +798,28 @@ func (interp *Interpreter) registerBuiltins() {
 			return nil, fmt.Errorf("replace() third argument must be String")
 		}
 		return &StringVal{V: strings.ReplaceAll(s.V, old.V, newStr.V)}, nil
+	}})
+	interp.env.Set("replace_regex", &BuiltinVal{Name: "replace_regex", Fn: func(args []Value) (Value, error) {
+		if len(args) != 3 {
+			return nil, fmt.Errorf("replace_regex() takes 3 arguments (content, pattern, replacement), got %d", len(args))
+		}
+		s, ok := args[0].(*StringVal)
+		if !ok {
+			return nil, fmt.Errorf("replace_regex() first argument must be String")
+		}
+		pattern, ok := args[1].(*StringVal)
+		if !ok {
+			return nil, fmt.Errorf("replace_regex() second argument must be String")
+		}
+		repl, ok := args[2].(*StringVal)
+		if !ok {
+			return nil, fmt.Errorf("replace_regex() third argument must be String")
+		}
+		re, err := regexp.Compile(pattern.V)
+		if err != nil {
+			return makeErrResult("regex_invalid", err.Error()), nil
+		}
+		return &StringVal{V: re.ReplaceAllString(s.V, repl.V)}, nil
 	}})
 	interp.env.Set("contains", &BuiltinVal{Name: "contains", Fn: func(args []Value) (Value, error) {
 		if len(args) != 2 {
@@ -1054,6 +1069,7 @@ func (interp *Interpreter) registerBuiltins() {
 		}
 		return &ListVal{Elements: result}, nil
 	}})
+
 	interp.env.Set("floor", &BuiltinVal{Name: "floor", Fn: func(args []Value) (Value, error) {
 		if len(args) != 1 {
 			return nil, fmt.Errorf("floor() takes 1 argument, got %d", len(args))
@@ -1132,7 +1148,6 @@ func (interp *Interpreter) registerBuiltins() {
 			"new": &BuiltinVal{Name: "Map.new", Fn: func(args []Value) (Value, error) {
 				return &MapVal{Entries: make(map[string]Value), Order: nil}, nil
 			}},
-			// Map.of(k1, v1, ...) or Map.of(obj) — populated map in one expr.
 			"of": &BuiltinVal{Name: "Map.of", Fn: func(args []Value) (Value, error) {
 				if len(args) == 1 {
 					if ov, ok := args[0].(*ObjectVal); ok {
@@ -1179,17 +1194,49 @@ func (interp *Interpreter) registerBuiltins() {
 		}
 		val := os.Getenv(key.V)
 		if val == "" {
-			// Distinguish unset from set-but-empty.
 			if _, exists := os.LookupEnv(key.V); !exists {
 				return &NilVal{}, nil
 			}
 		}
 		return &StringVal{V: val}, nil
 	}})
+	interp.env.Set("args", &BuiltinVal{Name: "args", Fn: func(_ []Value) (Value, error) {
+		elems := make([]Value, len(interp.scriptArgs))
+		for i, a := range interp.scriptArgs {
+			elems[i] = &StringVal{V: a}
+		}
+		return &ListVal{Elements: elems}, nil
+	}})
+	interp.env.Set("define_tool", &BuiltinVal{Name: "define_tool", Fn: func(args []Value) (Value, error) {
+		if len(args) != 1 {
+			return makeErrResult("define_tool_bad_args",
+				fmt.Sprintf("define_tool(source) takes 1 argument, got %d", len(args))), nil
+		}
+		s, ok := args[0].(*StringVal)
+		if !ok {
+			return makeErrResult("define_tool_bad_args", "source must be a String"), nil
+		}
+		l := lexer.New(s.V)
+		p := parser.New(l)
+		prog := p.ParseProgram()
+		if errs := p.Errors(); len(errs) > 0 {
+			return makeErrResult("define_tool_parse_failed", strings.Join(errs, "; ")), nil
+		}
+		var registered []Value
+		for _, stmt := range prog.Statements {
+			switch d := stmt.(type) {
+			case *parser.ObjectDecl:
+				interp.objectDecls[d.Name] = d
+			case *parser.EnumDecl:
+				interp.enumDecls[d.Name] = d
+			case *parser.ToolDecl:
+				interp.toolDecls[d.Name] = d
+				registered = append(registered, &StringVal{V: d.Name})
+			}
+		}
+		return &ListVal{Elements: registered}, nil
+	}})
 
-	// Supervisor.new(names, strategy, max_restarts, window_seconds) —
-	// explicit-lifecycle supervision over actors AND agents. Call .start()
-	// before .children() returns refs.
 	supervisorNS := &ObjectVal{
 		TypeName: "Supervisor",
 		Fields:   map[string]Value{},
@@ -1245,7 +1292,6 @@ func (interp *Interpreter) registerBuiltins() {
 			if !ok {
 				return makeErrResult("supervisor_bad_args", "child names must be Strings"), nil
 			}
-			// Actor lookup first, then agent. Unknown names fail closed.
 			if decl, exists := interp.actorDecls[name.V]; exists {
 				specs = append(specs, ChildSpec{Name: name.V, ActorDecl: decl})
 			} else if decl, exists := interp.agentDecls[name.V]; exists {
@@ -1266,10 +1312,6 @@ func (interp *Interpreter) registerBuiltins() {
 	}}
 	interp.env.Set("Supervisor", supervisorNS)
 
-	// supervise_agents(names, strategy, max_restarts, window_seconds) wires
-	// agents under a Supervisor and returns Map<name, ActorRef>. Strategies:
-	// "one_for_one", "one_for_all", "rest_for_one". Exceeding max_restarts
-	// in window_seconds stops the whole supervisor.
 	interp.env.Set("supervise_agents", &BuiltinVal{Name: "supervise_agents", Fn: func(args []Value) (Value, error) {
 		if len(args) < 1 {
 			return makeErrResult("supervisor_bad_args", "supervise_agents(names, strategy, max_restarts, window_seconds) requires at least 1 argument"), nil
@@ -1337,7 +1379,6 @@ func (interp *Interpreter) registerBuiltins() {
 			return makeErrResult("supervisor_start_failed", err.Error()), nil
 		}
 
-		// Return Map<name, ActorRef>.
 		result := &MapVal{Entries: make(map[string]Value)}
 		refs := sup.Children()
 		for i, child := range specs {
@@ -1347,8 +1388,6 @@ func (interp *Interpreter) registerBuiltins() {
 		return result, nil
 	}})
 
-	// with_capability(name, fn) pushes a capability for the duration of fn();
-	// tools declared with `capability: .name` only run when name is on the stack.
 	interp.env.Set("with_capability", &BuiltinVal{Name: "with_capability", Fn: func(args []Value) (Value, error) {
 		if len(args) != 2 {
 			return makeErrResult("capability_bad_args",
@@ -1376,7 +1415,7 @@ func (interp *Interpreter) hasCapability(name string) bool {
 	return slices.Contains(interp.capabilityStack, name)
 }
 
-// ApplyCallback lets stdlib providers invoke a Yoru callback from Go.
+// ApplyCallback invokes a FunctionVal or BuiltinVal callback from Go code.
 func (interp *Interpreter) ApplyCallback(fn Value, args []Value) Value {
 	return interp.applyCallback(fn, args)
 }
@@ -1410,7 +1449,6 @@ func (interp *Interpreter) applyCallback(fn Value, args []Value) Value {
 }
 
 func (interp *Interpreter) registerBuiltinEnums() {
-	// Option: Some(value) | None
 	interp.enumDecls["Option"] = &parser.EnumDecl{
 		Name: "Option",
 		Variants: []parser.EnumVariant{
@@ -1418,7 +1456,6 @@ func (interp *Interpreter) registerBuiltinEnums() {
 			{Name: "None"},
 		},
 	}
-	// Result: Ok(value) | Err(error)
 	interp.enumDecls["Result"] = &parser.EnumDecl{
 		Name: "Result",
 		Variants: []parser.EnumVariant{
@@ -1427,8 +1464,6 @@ func (interp *Interpreter) registerBuiltinEnums() {
 		},
 	}
 }
-
-// Statement evaluation
 
 func (interp *Interpreter) evalStatement(stmt parser.Statement) Value {
 	switch s := stmt.(type) {
@@ -1457,7 +1492,6 @@ func (interp *Interpreter) evalStatement(stmt parser.Statement) Value {
 	case *parser.ExpressionStatement:
 		return interp.evalExpression(s.Expression)
 	case *parser.FnDecl:
-		// Already registered in Pass 1.
 		return nil
 	case *parser.ObjectDecl:
 		return nil
@@ -1493,9 +1527,6 @@ func (interp *Interpreter) evalStatement(stmt parser.Statement) Value {
 	return &NilVal{}
 }
 
-// Expression evaluation
-
-// EvalExpressionPublic exposes evalExpression for cross-package callers.
 func (interp *Interpreter) EvalExpressionPublic(expr parser.Expression) Value {
 	return interp.evalExpression(expr)
 }
@@ -1562,14 +1593,11 @@ func (interp *Interpreter) evalExpression(expr parser.Expression) Value {
 	case *parser.SuperExpression:
 		return interp.evalSuper()
 	case *parser.SpreadExpression:
-		// Spread only meaningful inside list literal; standalone returns nil
 		return &NilVal{}
 	}
 
 	return &NilVal{}
 }
-
-// Identifier
 
 func (interp *Interpreter) evalIdentifier(ident *parser.Identifier) Value {
 	if interp.runtimeEffects[ident.Value] {
@@ -1578,15 +1606,12 @@ func (interp *Interpreter) evalIdentifier(ident *parser.Identifier) Value {
 	if val, ok := interp.env.Get(ident.Value); ok {
 		return val
 	}
-	// Tool declaration → first-class ToolVal; `MyTool.run(...)` dispatches as a method.
 	if _, ok := interp.toolDecls[ident.Value]; ok {
 		return &ToolVal{Name: ident.Value, interp: interp}
 	}
-	// Check if it's a registered enum name — return a sentinel
 	if _, ok := interp.enumDecls[ident.Value]; ok {
 		return &StringVal{V: "__enum__" + ident.Value}
 	}
-	// Check if it's a pipeline name — return a sentinel for .run()
 	if _, ok := interp.pipelineDecls[ident.Value]; ok {
 		return &ObjectVal{
 			TypeName: "__pipeline__",
@@ -1597,8 +1622,6 @@ func (interp *Interpreter) evalIdentifier(ident *parser.Identifier) Value {
 	}
 	return &NilVal{}
 }
-
-// Prefix
 
 func (interp *Interpreter) evalPrefix(expr *parser.PrefixExpression) Value {
 	right := interp.evalExpression(expr.Right)
@@ -1618,16 +1641,12 @@ func (interp *Interpreter) evalPrefix(expr *parser.PrefixExpression) Value {
 	return &NilVal{}
 }
 
-// Postfix (? operator)
-
 func (interp *Interpreter) evalPostfix(expr *parser.PostfixExpression) Value {
 	if expr.Operator == "?" {
 		val := interp.evalExpression(expr.Left)
 		if rs, ok := val.(*ReturnSignal); ok {
 			return rs
 		}
-		// Only Result participates in ?; other values pass through (so
-		// `(a / b)?` works for both IntVal and Result.Err).
 		ev, ok := val.(*EnumVal)
 		if !ok || ev.TypeName != "Result" {
 			return val
@@ -1635,21 +1654,16 @@ func (interp *Interpreter) evalPostfix(expr *parser.PostfixExpression) Value {
 		if ev.Variant == "Ok" {
 			return ev.Fields["value"]
 		}
-		// Err — propagate as early return
 		return &ReturnSignal{Value: val}
 	}
 	return &NilVal{}
 }
 
-// Infix
-
 func (interp *Interpreter) evalInfix(expr *parser.InfixExpression) Value {
-	// Send: target <- message
 	if expr.Operator == "<-" {
 		return interp.evalSend(expr)
 	}
 
-	// Null coalesce: left ?? right — short-circuit on right
 	if expr.Operator == "??" {
 		left := interp.evalExpression(expr.Left)
 		if rs, ok := left.(*ReturnSignal); ok {
@@ -1680,7 +1694,6 @@ func (interp *Interpreter) evalInfix(expr *parser.InfixExpression) Value {
 		return rs
 	}
 
-	// Short-circuit logical operators
 	if expr.Operator == "&&" {
 		if lb, ok := left.(*BoolVal); ok {
 			if !lb.V {
@@ -1834,8 +1847,6 @@ func (interp *Interpreter) evalFloatInfix(op string, l, r float64) Value {
 	return &NilVal{}
 }
 
-// Send: target <- Message or target <- Message(args)
-
 func (interp *Interpreter) evalSend(expr *parser.InfixExpression) Value {
 	target := interp.evalExpression(expr.Left)
 	ref, ok := target.(*ActorRef)
@@ -1866,8 +1877,6 @@ func (interp *Interpreter) evalSend(expr *parser.InfixExpression) Value {
 	return &NilVal{}
 }
 
-// Assignment
-
 func (interp *Interpreter) evalAssignment(expr *parser.AssignmentExpression) Value {
 	val := interp.evalExpression(expr.Value)
 
@@ -1886,7 +1895,6 @@ func (interp *Interpreter) evalAssignment(expr *parser.AssignmentExpression) Val
 			interp.env.Update(target.Value, newVal)
 		}
 	case *parser.FieldAccessExpression:
-		// self.field = val or self.field += val
 		leftVal := interp.evalExpression(target.Left)
 		if selfProxy, ok := leftVal.(*actorSelf); ok {
 			switch expr.Operator {
@@ -1943,8 +1951,6 @@ func (interp *Interpreter) subValues(a, b Value) Value {
 	return a
 }
 
-// If
-
 func (interp *Interpreter) evalIf(expr *parser.IfExpression) Value {
 	cond := interp.evalExpression(expr.Condition)
 	if isTruthy(cond) {
@@ -1967,8 +1973,6 @@ func isTruthy(v Value) bool {
 	}
 }
 
-// Block
-
 func (interp *Interpreter) evalBlock(block *parser.BlockExpression) Value {
 	if block == nil {
 		return &NilVal{}
@@ -1976,7 +1980,6 @@ func (interp *Interpreter) evalBlock(block *parser.BlockExpression) Value {
 	var result Value = &NilVal{}
 	for _, stmt := range block.Statements {
 		result = interp.evalStatement(stmt)
-		// Unwinding signals propagate to the enclosing function/loop.
 		switch result.(type) {
 		case *ReturnSignal, *BreakSignal, *ContinueSignal:
 			return result
@@ -1993,8 +1996,6 @@ func (interp *Interpreter) evalBlockScoped(block *parser.BlockExpression) Value 
 	return result
 }
 
-// Match
-
 func (interp *Interpreter) evalMatch(expr *parser.MatchExpression) Value {
 	subject := interp.evalExpression(expr.Subject)
 
@@ -2008,7 +2009,6 @@ func (interp *Interpreter) evalMatch(expr *parser.MatchExpression) Value {
 		for k, v := range bindings {
 			interp.env.Set(k, v)
 		}
-		// Guard clause `pattern if cond => body`: fall through on false.
 		if arm.Guard != nil {
 			cond := interp.evalExpression(arm.Guard)
 			interp.env = prev
@@ -2016,7 +2016,6 @@ func (interp *Interpreter) evalMatch(expr *parser.MatchExpression) Value {
 			if !ok || !b.V {
 				continue
 			}
-			// Re-establish bindings for the body.
 			interp.env = NewEnclosedEnvironment(prev)
 			for k, v := range bindings {
 				interp.env.Set(k, v)
@@ -2048,7 +2047,6 @@ func (interp *Interpreter) matchPattern(subject Value, pat parser.MatchPattern) 
 		return false, bindings
 
 	case "identifier":
-		// Bool match: "true" / "false"
 		if pat.Value == "true" {
 			if bv, ok := subject.(*BoolVal); ok {
 				return bv.V, bindings
@@ -2062,7 +2060,6 @@ func (interp *Interpreter) matchPattern(subject Value, pat parser.MatchPattern) 
 			return false, bindings
 		}
 
-		// Qualified name (Foo.Bar) → always a variant match.
 		if strings.Contains(pat.Value, ".") {
 			if ev, ok := subject.(*EnumVal); ok {
 				parts := strings.SplitN(pat.Value, ".", 2)
@@ -2071,8 +2068,6 @@ func (interp *Interpreter) matchPattern(subject Value, pat parser.MatchPattern) 
 			return false, bindings
 		}
 
-		// Uppercase → variant name; lowercase/underscore → fresh binding
-		// (supports `match n { x if x > 0 => ... }`).
 		if len(pat.Value) > 0 && pat.Value[0] >= 'A' && pat.Value[0] <= 'Z' {
 			if ev, ok := subject.(*EnumVal); ok {
 				return ev.Variant == pat.Value, bindings
@@ -2104,7 +2099,6 @@ func (interp *Interpreter) matchPattern(subject Value, pat parser.MatchPattern) 
 			return false, bindings
 		}
 
-		// Map positional bindings to the variant's declared field names.
 		if decl, ok := interp.enumDecls[ev.TypeName]; ok {
 			for _, variant := range decl.Variants {
 				if variant.Name == ev.Variant {
@@ -2137,7 +2131,6 @@ func (interp *Interpreter) matchPattern(subject Value, pat parser.MatchPattern) 
 				return false, bindings
 			}
 			if of.Subpattern == nil {
-				// Shorthand: bind field to a same-named variable.
 				bindings[of.Field] = fieldVal
 				continue
 			}
@@ -2153,10 +2146,7 @@ func (interp *Interpreter) matchPattern(subject Value, pat parser.MatchPattern) 
 	return false, bindings
 }
 
-// Call
-
 func (interp *Interpreter) evalCall(expr *parser.CallExpression) Value {
-	// Check for enum variant construction: Type.Variant(args)
 	if fa, ok := expr.Function.(*parser.FieldAccessExpression); ok {
 		if ident, ok := fa.Left.(*parser.Identifier); ok {
 			if _, isEnum := interp.enumDecls[ident.Value]; isEnum {
@@ -2165,7 +2155,6 @@ func (interp *Interpreter) evalCall(expr *parser.CallExpression) Value {
 		}
 	}
 
-	// Check for actor.ask(MessageType) or actor.ask(MessageType(args))
 	if fa, ok := expr.Function.(*parser.FieldAccessExpression); ok {
 		if fa.Field == "ask" {
 			left := interp.evalExpression(fa.Left)
@@ -2175,7 +2164,6 @@ func (interp *Interpreter) evalCall(expr *parser.CallExpression) Value {
 		}
 	}
 
-	// Check for agent_ref.chat(prompt) — synchronous request to a spawned agent.
 	if fa, ok := expr.Function.(*parser.FieldAccessExpression); ok {
 		if fa.Field == "chat" {
 			left := interp.evalExpression(fa.Left)
@@ -2185,7 +2173,6 @@ func (interp *Interpreter) evalCall(expr *parser.CallExpression) Value {
 		}
 	}
 
-	// Check for Pipeline.run()
 	if fa, ok := expr.Function.(*parser.FieldAccessExpression); ok {
 		if fa.Field == "run" {
 			if ident, ok := fa.Left.(*parser.Identifier); ok {
@@ -2196,7 +2183,6 @@ func (interp *Interpreter) evalCall(expr *parser.CallExpression) Value {
 		}
 	}
 
-	// Check for Tool.run(args) or Tool.schema()
 	if fa, ok := expr.Function.(*parser.FieldAccessExpression); ok {
 		if ident, ok := fa.Left.(*parser.Identifier); ok {
 			if _, isTool := interp.toolDecls[ident.Value]; isTool {
@@ -2237,12 +2223,10 @@ func (interp *Interpreter) evalCall(expr *parser.CallExpression) Value {
 func (interp *Interpreter) callFunction(fn *FunctionVal, callArgs []parser.CallArg) Value {
 	fnEnv := NewEnclosedEnvironment(fn.Env)
 
-	// Bind self for impl methods
 	if fn.Self != nil {
 		fnEnv.Set("self", fn.Self)
 	}
 
-	// Bind params from call args
 	argIdx := 0
 	for _, param := range fn.Params {
 		if param.Name == "self" {
@@ -2250,20 +2234,17 @@ func (interp *Interpreter) callFunction(fn *FunctionVal, callArgs []parser.CallA
 		}
 		var val Value = &NilVal{}
 
-		// Try named arg first
 		for _, arg := range callArgs {
 			if arg.Name == param.Name {
 				val = interp.evalExpression(arg.Value)
 				break
 			}
 		}
-		// Fall back to positional
 		if _, ok := val.(*NilVal); ok && argIdx < len(callArgs) && callArgs[argIdx].Name == "" {
 			val = interp.evalExpression(callArgs[argIdx].Value)
 		}
 		argIdx++
 
-		// Fall back to default
 		if _, ok := val.(*NilVal); ok && param.Default != nil {
 			val = interp.evalExpression(param.Default)
 		}
@@ -2279,7 +2260,6 @@ func (interp *Interpreter) callFunction(fn *FunctionVal, callArgs []parser.CallA
 	if rs, ok := result.(*ReturnSignal); ok {
 		return rs.Value
 	}
-	// break/continue escaping a function body means they were used outside any loop.
 	if _, ok := result.(*BreakSignal); ok {
 		panic("runtime error: 'break' outside loop")
 	}
@@ -2289,10 +2269,7 @@ func (interp *Interpreter) callFunction(fn *FunctionVal, callArgs []parser.CallA
 	return result
 }
 
-// Field access
-
 func (interp *Interpreter) evalFieldAccess(expr *parser.FieldAccessExpression) Value {
-	// Check for enum construction without args: Type.Variant
 	if ident, ok := expr.Left.(*parser.Identifier); ok {
 		if _, isEnum := interp.enumDecls[ident.Value]; isEnum {
 			return &EnumVal{TypeName: ident.Value, Variant: expr.Field}
@@ -2301,7 +2278,6 @@ func (interp *Interpreter) evalFieldAccess(expr *parser.FieldAccessExpression) V
 
 	left := interp.evalExpression(expr.Left)
 
-	// Effect namespace method resolution
 	if ns, ok := left.(*EffectNamespaceVal); ok {
 		handler, found := interp.effectStack.Resolve(ns.Name)
 		if !found {
@@ -2315,20 +2291,16 @@ func (interp *Interpreter) evalFieldAccess(expr *parser.FieldAccessExpression) V
 		return &NilVal{}
 	}
 
-	// Actor ask: ref.ask(MessageType) — returns a builtin marker
-	// Actual interception happens in evalCall to preserve raw AST args
 	if _, ok := left.(*ActorRef); ok {
 		if expr.Field == "ask" {
 			ref := left.(*ActorRef)
 			return &BuiltinVal{Name: "__actor_ask__", Fn: func(args []Value) (Value, error) {
-				// Real handling is in evalCall (needs raw AST args).
 				_ = ref
 				return &NilVal{}, nil
 			}}
 		}
 	}
 
-	// actorSelf field access
 	if selfProxy, ok := left.(*actorSelf); ok {
 		if val, found := selfProxy.GetField(expr.Field); found {
 			return val
@@ -2336,7 +2308,6 @@ func (interp *Interpreter) evalFieldAccess(expr *parser.FieldAccessExpression) V
 		return &NilVal{}
 	}
 
-	// Bytes field access / methods
 	if bv, ok := left.(*BytesVal); ok {
 		switch expr.Field {
 		case "len":
@@ -2379,7 +2350,6 @@ func (interp *Interpreter) evalFieldAccess(expr *parser.FieldAccessExpression) V
 		return &NilVal{}
 	}
 
-	// MapVal method dispatch
 	if mv, ok := left.(*MapVal); ok {
 		switch expr.Field {
 		case "get":
@@ -2405,7 +2375,6 @@ func (interp *Interpreter) evalFieldAccess(expr *parser.FieldAccessExpression) V
 				if !ok {
 					return nil, fmt.Errorf("Map.set() key must be String")
 				}
-				// Immutable: build a new MapVal so cross-actor sharing stays safe.
 				newEntries := make(map[string]Value, len(mv.Entries)+1)
 				maps.Copy(newEntries, mv.Entries)
 				newOrder := make([]string, len(mv.Order))
@@ -2437,7 +2406,6 @@ func (interp *Interpreter) evalFieldAccess(expr *parser.FieldAccessExpression) V
 				if !ok {
 					return nil, fmt.Errorf("Map.delete() key must be String")
 				}
-				// Immutable: build a new MapVal.
 				newEntries := make(map[string]Value, len(mv.Entries))
 				for kk, vv := range mv.Entries {
 					if kk != k.V {
@@ -2482,13 +2450,10 @@ func (interp *Interpreter) evalFieldAccess(expr *parser.FieldAccessExpression) V
 		return &NilVal{}
 	}
 
-	// ToolVal method dispatch: .run / .schema / .name / .description / .input_schema.
 	if tv, ok := left.(*ToolVal); ok {
 		switch expr.Field {
 		case "run":
 			return &BuiltinVal{Name: tv.Name + ".run", Fn: func(args []Value) (Value, error) {
-				// Method-call path lacks raw CallArgs; fall back to
-				// evalToolRunFromValues which keys positionally off the input decl.
 				return tv.interp.evalToolRunFromValues(tv.Name, args), nil
 			}}
 		case "schema":
@@ -2518,9 +2483,6 @@ func (interp *Interpreter) evalFieldAccess(expr *parser.FieldAccessExpression) V
 		return &NilVal{}
 	}
 
-	// SupervisorVal method dispatch — `.start()`, `.stop()`, `.children()`,
-	// `.add_child(name)`. Returns are wrapped in symmetric Result shape
-	// (Ok on success, Err on bad input) to match the rest of the language.
 	if sv, ok := left.(*SupervisorVal); ok {
 		switch expr.Field {
 		case "start":
@@ -2538,7 +2500,6 @@ func (interp *Interpreter) evalFieldAccess(expr *parser.FieldAccessExpression) V
 		case "children":
 			return &BuiltinVal{Name: "Supervisor.children", Fn: func(args []Value) (Value, error) {
 				refs := sv.Sup.Children()
-				// Skip nil refs: Children() returns nil slots before start().
 				entries := make(map[string]Value)
 				var order []string
 				for i, ref := range refs {
@@ -2590,7 +2551,6 @@ func (interp *Interpreter) evalFieldAccess(expr *parser.FieldAccessExpression) V
 		return &NilVal{}
 	}
 
-	// Object field access
 	if obj, ok := left.(*ObjectVal); ok {
 		if val, exists := obj.Fields[expr.Field]; exists {
 			return val
@@ -2604,7 +2564,6 @@ func (interp *Interpreter) evalFieldAccess(expr *parser.FieldAccessExpression) V
 				Self:   obj,
 			}
 		}
-		// Forward through the delegate chain.
 		if result := interp.resolveFieldOnDelegate(obj, expr.Field, make(map[string]bool)); result != nil {
 			return result
 		}
@@ -2614,8 +2573,8 @@ func (interp *Interpreter) evalFieldAccess(expr *parser.FieldAccessExpression) V
 	return &NilVal{}
 }
 
-// evalLeadingDot materializes `.name(args...)` as a tagged ObjectVal{tag, args, named}.
-// Stable shape so introspecting runtimes dispatch on `tag` without enum inference.
+// evalLeadingDot materializes `.name(args...)` as a tagged ObjectVal with
+// named args under `named` and positional args under `args`.
 func (interp *Interpreter) evalLeadingDot(expr *parser.LeadingDotExpression) Value {
 	positional := make([]Value, 0, len(expr.Args))
 	named := make(map[string]Value, len(expr.Args))
@@ -2642,9 +2601,7 @@ func (interp *Interpreter) evalLeadingDot(expr *parser.LeadingDotExpression) Val
 }
 
 // maybeCoerceByLetAnnotation re-tags a generic ObjectVal as the declared
-// type from the let annotation, validating required fields are present.
-// Returns Result.Err{json_decode_failed} on missing field. No-op when the
-// annotation is empty, unknown, or the value is already typed.
+// type from the let annotation, validating that required fields are present.
 func (interp *Interpreter) maybeCoerceByLetAnnotation(typeExpr string, val Value) Value {
 	if typeExpr == "" {
 		return val
@@ -2667,8 +2624,7 @@ func (interp *Interpreter) maybeCoerceByLetAnnotation(typeExpr string, val Value
 	return ov
 }
 
-// GetObjectFields returns the declared fields of an object type for
-// stdlib providers needing schema validation at runtime.
+// GetObjectFields returns the declared fields of a named object type.
 func (interp *Interpreter) GetObjectFields(typeName string) ([]parser.Field, bool) {
 	decl, ok := interp.objectDecls[typeName]
 	if !ok {
@@ -2713,11 +2669,9 @@ func (interp *Interpreter) resolveFieldOnDelegate(obj *ObjectVal, field string, 
 		if !ok {
 			continue
 		}
-		// Check delegate's own fields
 		if val, exists := delegateObj.Fields[field]; exists {
 			return val
 		}
-		// Check delegate's impl methods
 		if method := interp.resolveImplMethod(delegateObj.TypeName, field); method != nil {
 			return &FunctionVal{
 				Name:   method.Name,
@@ -2727,7 +2681,6 @@ func (interp *Interpreter) resolveFieldOnDelegate(obj *ObjectVal, field string, 
 				Self:   delegateObj,
 			}
 		}
-		// Recurse into delegate's own delegates
 		if result := interp.resolveFieldOnDelegate(delegateObj, field, visited); result != nil {
 			return result
 		}
@@ -2743,7 +2696,6 @@ func (interp *Interpreter) evalActorAskFromAST(ref *ActorRef, callArgs []parser.
 
 	if len(callArgs) > 0 {
 		argExpr := callArgs[0].Value
-		// Identifier (GetCount) or CallExpression (Greet(name: "Yoru")).
 		switch a := argExpr.(type) {
 		case *parser.Identifier:
 			msg.Method = a.Value
@@ -2760,15 +2712,12 @@ func (interp *Interpreter) evalActorAskFromAST(ref *ActorRef, callArgs []parser.
 		}
 	}
 
-	// Send-on-closed-mailbox surfaces as Result.Err (recoverable), not a panic.
 	if sendErr := safeMailboxSend(ref.Mailbox, msg); sendErr != nil {
 		return makeErrResult("actor_stopped", "actor mailbox is closed")
 	}
 
 	select {
 	case result := <-msg.ReplyCh:
-		// Wrap in Result.Ok for a symmetric shape; pass through if the receive
-		// block already returned a Result (avoid double-wrapping).
 		if ev, isResult := result.(*EnumVal); isResult && ev.TypeName == "Result" {
 			return ev
 		}
@@ -2780,8 +2729,8 @@ func (interp *Interpreter) evalActorAskFromAST(ref *ActorRef, callArgs []parser.
 	}
 }
 
-// safeMailboxSend recovers send-on-closed so .ask produces Result.Err
-// instead of panicking.
+// safeMailboxSend recovers send-on-closed so writes to a stopped actor
+// surface as an error instead of panicking.
 func safeMailboxSend(mailbox chan ActorMessage, msg ActorMessage) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -2791,8 +2740,6 @@ func safeMailboxSend(mailbox chan ActorMessage, msg ActorMessage) (err error) {
 	mailbox <- msg
 	return nil
 }
-
-// Index
 
 func (interp *Interpreter) evalIndex(expr *parser.IndexExpression) Value {
 	left := interp.evalExpression(expr.Left)
@@ -2836,8 +2783,6 @@ func (interp *Interpreter) evalIndex(expr *parser.IndexExpression) Value {
 	return &NilVal{}
 }
 
-// List
-
 func (interp *Interpreter) evalList(expr *parser.ListLiteral) Value {
 	var elems []Value
 	for _, e := range expr.Elements {
@@ -2855,22 +2800,17 @@ func (interp *Interpreter) evalList(expr *parser.ListLiteral) Value {
 	return &ListVal{Elements: elems}
 }
 
-// Object literal
-
 func (interp *Interpreter) evalObjectLiteral(expr *parser.ObjectLiteral) Value {
 	fields := make(map[string]Value)
 	for _, f := range expr.Fields {
 		fields[f.Name] = interp.evalExpression(f.Value)
 	}
-	// Bare `{ k: v }` gets the generic "Object" type (matches JSON.decode).
 	typeName := expr.Name
 	if typeName == "" {
 		typeName = "Object"
 	}
 	return &ObjectVal{TypeName: typeName, Fields: fields}
 }
-
-// Lambda
 
 func (interp *Interpreter) evalLambda(expr *parser.LambdaExpression) Value {
 	return &FunctionVal{
@@ -2880,8 +2820,6 @@ func (interp *Interpreter) evalLambda(expr *parser.LambdaExpression) Value {
 		Env:    interp.env,
 	}
 }
-
-// Spawn
 
 func (interp *Interpreter) evalSpawn(expr *parser.SpawnExpression) Value {
 	var actorName string
@@ -2902,7 +2840,6 @@ func (interp *Interpreter) evalSpawn(expr *parser.SpawnExpression) Value {
 		actorName = call.Value
 	}
 
-	// Agents are spawned like actors but back-driven by an LLM reasoning loop.
 	if agentDecl, ok := interp.agentDecls[actorName]; ok {
 		return interp.spawnAgent(agentDecl)
 	}
@@ -2914,8 +2851,6 @@ func (interp *Interpreter) evalSpawn(expr *parser.SpawnExpression) Value {
 
 	return interp.spawnActor(decl, args)
 }
-
-// Handle (effect handler)
 
 func (interp *Interpreter) evalHandle(expr *parser.HandleExpression) Value {
 	handler := interp.evalExpression(expr.Handler)
@@ -2934,8 +2869,6 @@ func (interp *Interpreter) evalHandle(expr *parser.HandleExpression) Value {
 	}
 	return result
 }
-
-// For-in loop
 
 func (interp *Interpreter) evalForIn(expr *parser.ForInExpression) Value {
 	iterable := interp.evalExpression(expr.Iterable)
@@ -2989,8 +2922,6 @@ func (interp *Interpreter) evalWhile(expr *parser.WhileExpression) Value {
 	return result
 }
 
-// Let destructure: let [a, b, ...rest] = expr
-
 func (interp *Interpreter) evalLetDestructure(stmt *parser.LetDestructureStatement) Value {
 	val := interp.evalExpression(stmt.Value)
 	if rs, ok := val.(*ReturnSignal); ok {
@@ -3002,7 +2933,6 @@ func (interp *Interpreter) evalLetDestructure(stmt *parser.LetDestructureStateme
 		panic("runtime error: list destructuring requires a list value, got " + val.Type())
 	}
 
-	// Bind positional names
 	for i, name := range stmt.Pattern.Names {
 		if i < len(list.Elements) {
 			interp.env.Set(name, list.Elements[i])
@@ -3011,7 +2941,6 @@ func (interp *Interpreter) evalLetDestructure(stmt *parser.LetDestructureStateme
 		}
 	}
 
-	// Bind rest
 	if stmt.Pattern.RestName != "" {
 		start := stmt.Pattern.RestIdx
 		if start < len(list.Elements) {
@@ -3025,8 +2954,6 @@ func (interp *Interpreter) evalLetDestructure(stmt *parser.LetDestructureStateme
 
 	return val
 }
-
-// Super expression: super → delegate object
 
 func (interp *Interpreter) evalSuper() Value {
 	selfVal, ok := interp.env.Get("self")
@@ -3048,8 +2975,6 @@ func (interp *Interpreter) evalSuper() Value {
 	return &NilVal{}
 }
 
-// Enum construction
-
 func (interp *Interpreter) evalEnumConstruction(typeName, variant string, callArgs []parser.CallArg) Value {
 	fields := make(map[string]Value)
 
@@ -3058,7 +2983,6 @@ func (interp *Interpreter) evalEnumConstruction(typeName, variant string, callAr
 		return &EnumVal{TypeName: typeName, Variant: variant, Fields: fields}
 	}
 
-	// Find the variant declaration to get field names
 	for _, v := range decl.Variants {
 		if v.Name == variant {
 			for i, arg := range callArgs {
@@ -3076,15 +3000,12 @@ func (interp *Interpreter) evalEnumConstruction(typeName, variant string, callAr
 	return &EnumVal{TypeName: typeName, Variant: variant, Fields: fields}
 }
 
-// Pipeline execution
-
 func (interp *Interpreter) evalPipeline(name string) Value {
 	decl, ok := interp.pipelineDecls[name]
 	if !ok {
 		return &NilVal{}
 	}
 
-	// Find the source, transforms, partition, and sink stages
 	var sourceExpr parser.Expression
 	var transforms []parser.Expression
 	var sinkExpr parser.Expression
@@ -3107,9 +3028,7 @@ func (interp *Interpreter) evalPipeline(name string) Value {
 		case "on_error":
 			hasOnError = true
 		case "back_pressure":
-			// Parsed but metadata-only.
 		case "checkpoint":
-			// Parsed but metadata-only.
 		}
 	}
 
@@ -3166,7 +3085,6 @@ func (interp *Interpreter) applyTransform(items []Value, txFn Value) []Value {
 	var result []Value
 	for _, item := range items {
 		val := interp.callTransformFn(txFn, item)
-		// Filter: None or nil are dropped; Some(x) is unwrapped
 		if ev, ok := val.(*EnumVal); ok {
 			if ev.TypeName == "Option" && ev.Variant == "None" {
 				continue
@@ -3189,7 +3107,6 @@ func (interp *Interpreter) applyTransform(items []Value, txFn Value) []Value {
 func (interp *Interpreter) callTransformFn(fn Value, arg Value) Value {
 	switch f := fn.(type) {
 	case *FunctionVal:
-		// Private interpreter prevents data races in partitioned pipelines.
 		child := &Interpreter{
 			env:             NewEnclosedEnvironment(f.Env),
 			effectStack:     interp.effectStack,
@@ -3204,6 +3121,7 @@ func (interp *Interpreter) callTransformFn(fn Value, arg Value) Value {
 			serviceDecls:    interp.serviceDecls,
 			llmClient:       interp.llmClient,
 			capabilityStack: interp.capabilityStack,
+			fsSessionStack:  interp.fsSessionStack,
 		}
 		if len(f.Params) > 0 {
 			child.env.Set(f.Params[0].Name, arg)
@@ -3245,7 +3163,6 @@ func (interp *Interpreter) evalPartitionedPipeline(items []Value, transforms []p
 				for _, txFn := range txFns {
 					result = interp.callTransformFn(txFn, result)
 				}
-				// Filter: skip None/nil
 				if ev, ok := result.(*EnumVal); ok {
 					if ev.TypeName == "Option" && ev.Variant == "None" {
 						continue
@@ -3275,7 +3192,6 @@ func (interp *Interpreter) evalPartitionedPipeline(items []Value, transforms []p
 		results = append(results, val)
 	}
 
-	// Sort for deterministic output.
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Inspect() < results[j].Inspect()
 	})
@@ -3283,21 +3199,17 @@ func (interp *Interpreter) evalPartitionedPipeline(items []Value, transforms []p
 	return results
 }
 
-// Tool execution
-
 func (interp *Interpreter) evalToolRun(name string, callArgs []parser.CallArg) Value {
 	decl, ok := interp.toolDecls[name]
 	if !ok || decl.RunFn == nil {
 		return &NilVal{}
 	}
 
-	// Capability gate: returns Result.Err{capability_denied} when not in scope.
 	if decl.Capability != "" && !interp.hasCapability(decl.Capability) {
 		return makeErrResult("capability_denied",
 			"tool '"+name+"' requires capability '"+decl.Capability+"'")
 	}
 
-	// Bind the "i" input object: named → positional → default.
 	inputFields := make(map[string]Value)
 	for idx, input := range decl.Inputs {
 		var val Value = &NilVal{}
@@ -3332,10 +3244,6 @@ func (interp *Interpreter) evalToolRun(name string, callArgs []parser.CallArg) V
 	return interp.validateToolOutput(decl, result)
 }
 
-// validateToolOutput enforces the tool's `output { ... }` block. The
-// `output: Type` form passes through. Result.Err passes through verbatim.
-// ObjectVal matching declared fields is re-tagged "<ToolName>.Output";
-// other shapes return Result.Err{tool_output_invalid}.
 func (interp *Interpreter) validateToolOutput(decl *parser.ToolDecl, result Value) Value {
 	if len(decl.Outputs) == 0 {
 		return result
@@ -3343,7 +3251,6 @@ func (interp *Interpreter) validateToolOutput(decl *parser.ToolDecl, result Valu
 	if ev, ok := result.(*EnumVal); ok && ev.TypeName == "Result" && ev.Variant == "Err" {
 		return ev
 	}
-	// Unwrap Result.Ok(v) so the validator sees v directly.
 	if ev, ok := result.(*EnumVal); ok && ev.TypeName == "Result" && ev.Variant == "Ok" {
 		if inner, ok := ev.Fields["value"]; ok {
 			result = inner
@@ -3364,9 +3271,8 @@ func (interp *Interpreter) validateToolOutput(decl *parser.ToolDecl, result Valu
 	return ov
 }
 
-// evalToolRunFromValues is the value-call variant of evalToolRun. Args
-// arrive pre-evaluated, so positional dispatch only; named-arg dispatch
-// requires the special-form `MyTool.run(x: 1)` path.
+// evalToolRunFromValues is the value-call variant of evalToolRun.
+// Args arrive pre-evaluated, so positional dispatch only.
 func (interp *Interpreter) evalToolRunFromValues(name string, args []Value) Value {
 	decl, ok := interp.toolDecls[name]
 	if !ok || decl.RunFn == nil {
@@ -3406,7 +3312,7 @@ func (interp *Interpreter) evalToolRunFromValues(name string, args []Value) Valu
 }
 
 // evalToolOutputSchema returns the outputSchema JSON for `output { ... }`
-// tools, or NilVal for `output: Type` tools (no structured shape).
+// tools, or NilVal for `output: Type` tools.
 func (interp *Interpreter) evalToolOutputSchema(name string) Value {
 	decl, ok := interp.toolDecls[name]
 	if !ok {
@@ -3416,7 +3322,7 @@ func (interp *Interpreter) evalToolOutputSchema(name string) Value {
 		return &NilVal{}
 	}
 	adapter := &toolDeclAdapter{decl: decl, interp: interp}
-	schema, err := tool.FromAST(adapter)
+	schema, err := tool.FromASTWithResolver(adapter, &interpTypeResolver{interp: interp})
 	if err != nil {
 		return &StringVal{V: fmt.Sprintf("error: %s", err)}
 	}
@@ -3438,7 +3344,7 @@ func (interp *Interpreter) evalToolInputSchema(name string) Value {
 		return &NilVal{}
 	}
 	adapter := &toolDeclAdapter{decl: decl, interp: interp}
-	schema, err := tool.FromAST(adapter)
+	schema, err := tool.FromASTWithResolver(adapter, &interpTypeResolver{interp: interp})
 	if err != nil {
 		return &StringVal{V: fmt.Sprintf("error: %s", err)}
 	}
@@ -3456,13 +3362,11 @@ func (interp *Interpreter) evalToolSchema(name string) Value {
 	}
 
 	adapter := &toolDeclAdapter{decl: decl, interp: interp}
-	schema, err := tool.FromAST(adapter)
+	schema, err := tool.FromASTWithResolver(adapter, &interpTypeResolver{interp: interp})
 	if err != nil {
 		return &StringVal{V: fmt.Sprintf("error: %s", err)}
 	}
 
-	// MCP wire format (camelCase). Anthropic snake_case is emitted by
-	// tool.ToolSchema.ToJSON() in the Anthropic client.
 	data, err := schema.ToMCPJSON()
 	if err != nil {
 		return &StringVal{V: fmt.Sprintf("error: %s", err)}
@@ -3470,8 +3374,6 @@ func (interp *Interpreter) evalToolSchema(name string) Value {
 
 	return &StringVal{V: string(data)}
 }
-
-// Bridge: parser.ToolDecl → tool.ToolDeclLike
 
 type toolDeclAdapter struct {
 	decl   *parser.ToolDecl
@@ -3517,7 +3419,57 @@ func (f *fieldAdapter) FieldAnnotation() *tool.AnnotationLike {
 	return nil
 }
 
-// Public bridge methods for MCP server build
+type interpTypeResolver struct {
+	interp *Interpreter
+}
+
+func (r *interpTypeResolver) ResolveObject(name string) ([]tool.FieldLike, bool) {
+	decl, ok := r.interp.objectDecls[name]
+	if !ok {
+		return nil, false
+	}
+	fields := make([]tool.FieldLike, len(decl.Fields))
+	for i, f := range decl.Fields {
+		fields[i] = &fieldAdapter{field: f}
+	}
+	return fields, true
+}
+
+func (r *interpTypeResolver) ResolveEnum(name string) (tool.EnumLike, bool) {
+	decl, ok := r.interp.enumDecls[name]
+	if !ok {
+		return nil, false
+	}
+	return &enumDeclAdapter{decl: decl}, true
+}
+
+type enumDeclAdapter struct {
+	decl *parser.EnumDecl
+}
+
+func (a *enumDeclAdapter) EnumName() string { return a.decl.Name }
+
+func (a *enumDeclAdapter) EnumVariants() []tool.EnumVariantLike {
+	out := make([]tool.EnumVariantLike, len(a.decl.Variants))
+	for i, v := range a.decl.Variants {
+		out[i] = &enumVariantAdapter{variant: v}
+	}
+	return out
+}
+
+type enumVariantAdapter struct {
+	variant parser.EnumVariant
+}
+
+func (a *enumVariantAdapter) VariantName() string { return a.variant.Name }
+
+func (a *enumVariantAdapter) VariantFields() []tool.FieldLike {
+	out := make([]tool.FieldLike, len(a.variant.Fields))
+	for i, f := range a.variant.Fields {
+		out[i] = &fieldAdapter{field: f}
+	}
+	return out
+}
 
 // GetMCPDecls returns all MCP declarations collected during evaluation.
 func (interp *Interpreter) GetMCPDecls() map[string]*parser.MCPDecl {
@@ -3536,7 +3488,7 @@ func (interp *Interpreter) GetToolSchema(name string) *tool.ToolSchema {
 		return nil
 	}
 	adapter := &toolDeclAdapter{decl: decl, interp: interp}
-	schema, err := tool.FromAST(adapter)
+	schema, err := tool.FromASTWithResolver(adapter, &interpTypeResolver{interp: interp})
 	if err != nil {
 		return nil
 	}
@@ -3544,7 +3496,6 @@ func (interp *Interpreter) GetToolSchema(name string) *tool.ToolSchema {
 }
 
 // InvokeToolJSON invokes a tool by name with JSON arguments.
-// Bridges JSON args → synthetic parser.CallArg nodes → evalToolRun().
 func (interp *Interpreter) InvokeToolJSON(name string, argsJSON json.RawMessage) (string, error) {
 	decl, ok := interp.toolDecls[name]
 	if !ok {
@@ -3558,7 +3509,6 @@ func (interp *Interpreter) InvokeToolJSON(name string, argsJSON json.RawMessage)
 		}
 	}
 
-	// Validate required args
 	for _, input := range decl.Inputs {
 		isOptional := strings.HasPrefix(input.TypeExpr, "Option[") || input.Default != nil
 		if !isOptional {
@@ -3568,25 +3518,23 @@ func (interp *Interpreter) InvokeToolJSON(name string, argsJSON json.RawMessage)
 		}
 	}
 
-	// Validate types
 	for _, input := range decl.Inputs {
 		val, exists := argsMap[input.Name]
 		if !exists {
 			continue
 		}
-		if err := validateArgType(val, input.TypeExpr); err != nil {
+		if err := interp.validateArgType(val, input.TypeExpr); err != nil {
 			return "", fmt.Errorf("type mismatch for '%s': %s", input.Name, err)
 		}
 	}
 
-	// Build synthetic CallArgs from JSON
 	var callArgs []parser.CallArg
 	for _, input := range decl.Inputs {
 		val, exists := argsMap[input.Name]
 		if !exists {
 			continue
 		}
-		expr := jsonValueToAST(val)
+		expr := interp.jsonValueToAST(val, input.TypeExpr)
 		if expr != nil {
 			callArgs = append(callArgs, parser.CallArg{Name: input.Name, Value: expr})
 		}
@@ -3596,15 +3544,39 @@ func (interp *Interpreter) InvokeToolJSON(name string, argsJSON json.RawMessage)
 	return result.Inspect(), nil
 }
 
-// validateArgType checks if a JSON value matches the expected Yoru type.
-func validateArgType(val any, typeExpr string) error {
+func stripOption(typeExpr string) string {
+	if strings.HasPrefix(typeExpr, "Option[") && strings.HasSuffix(typeExpr, "]") {
+		return typeExpr[7 : len(typeExpr)-1]
+	}
+	return typeExpr
+}
+
+func listInner(typeExpr string) (string, bool) {
+	if strings.HasPrefix(typeExpr, "[") && strings.HasSuffix(typeExpr, "]") {
+		return typeExpr[1 : len(typeExpr)-1], true
+	}
+	return "", false
+}
+
+func (interp *Interpreter) validateArgType(val any, typeExpr string) error {
 	if val == nil {
 		return nil
 	}
-	// Strip Option wrapper
-	if strings.HasPrefix(typeExpr, "Option[") && strings.HasSuffix(typeExpr, "]") {
-		typeExpr = typeExpr[7 : len(typeExpr)-1]
+	typeExpr = stripOption(typeExpr)
+
+	if inner, isList := listInner(typeExpr); isList {
+		arr, ok := val.([]any)
+		if !ok {
+			return fmt.Errorf("expected list, got %T", val)
+		}
+		for i, elem := range arr {
+			if err := interp.validateArgType(elem, inner); err != nil {
+				return fmt.Errorf("element %d: %s", i, err)
+			}
+		}
+		return nil
 	}
+
 	switch typeExpr {
 	case "Int":
 		if f, ok := val.(float64); ok {
@@ -3630,11 +3602,113 @@ func validateArgType(val any, typeExpr string) error {
 		}
 		return fmt.Errorf("expected Bool, got %T", val)
 	}
-	return nil // unknown type: allow
+
+	if enumDecl, ok := interp.enumDecls[typeExpr]; ok {
+		return interp.validateEnumArg(val, enumDecl)
+	}
+
+	if objDecl, ok := interp.objectDecls[typeExpr]; ok {
+		return interp.validateObjectArg(val, objDecl)
+	}
+
+	return nil
 }
 
-// jsonValueToAST converts a JSON-decoded value to a parser Expression node.
-func jsonValueToAST(val any) parser.Expression {
+func (interp *Interpreter) validateEnumArg(val any, decl *parser.EnumDecl) error {
+	obj, ok := val.(map[string]any)
+	if !ok {
+		if s, isString := val.(string); isString {
+			for _, v := range decl.Variants {
+				if v.Name == s && len(v.Fields) == 0 {
+					return nil
+				}
+			}
+			return fmt.Errorf("unknown variant '%s' in enum '%s'", s, decl.Name)
+		}
+		return fmt.Errorf("expected object with 'kind' for enum '%s', got %T", decl.Name, val)
+	}
+	kindRaw, ok := obj[tool.DiscriminatorField]
+	if !ok {
+		return fmt.Errorf("missing 'kind' discriminator for enum '%s'", decl.Name)
+	}
+	kind, ok := kindRaw.(string)
+	if !ok {
+		return fmt.Errorf("'kind' must be a string for enum '%s', got %T", decl.Name, kindRaw)
+	}
+	for _, v := range decl.Variants {
+		if v.Name != kind {
+			continue
+		}
+		for _, f := range v.Fields {
+			fv, has := obj[f.Name]
+			if !has {
+				if strings.HasPrefix(f.TypeExpr, "Option[") || f.Default != nil {
+					continue
+				}
+				return fmt.Errorf("variant '%s.%s' missing field '%s'", decl.Name, kind, f.Name)
+			}
+			if err := interp.validateArgType(fv, f.TypeExpr); err != nil {
+				return fmt.Errorf("variant '%s.%s' field '%s': %s", decl.Name, kind, f.Name, err)
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("unknown variant '%s' in enum '%s'", kind, decl.Name)
+}
+
+func (interp *Interpreter) validateObjectArg(val any, decl *parser.ObjectDecl) error {
+	obj, ok := val.(map[string]any)
+	if !ok {
+		return fmt.Errorf("expected object for type '%s', got %T", decl.Name, val)
+	}
+	for _, f := range decl.Fields {
+		fv, has := obj[f.Name]
+		if !has {
+			if strings.HasPrefix(f.TypeExpr, "Option[") || f.Default != nil {
+				continue
+			}
+			return fmt.Errorf("type '%s' missing field '%s'", decl.Name, f.Name)
+		}
+		if err := interp.validateArgType(fv, f.TypeExpr); err != nil {
+			return fmt.Errorf("field '%s': %s", f.Name, err)
+		}
+	}
+	return nil
+}
+
+// jsonValueToAST lowers a JSON-decoded value into a parser.Expression.
+// typeExpr guides reconstruction: typed objects/enums get re-tagged with
+// their declared shape; untyped values become anonymous literals.
+func (interp *Interpreter) jsonValueToAST(val any, typeExpr string) parser.Expression {
+	typeExpr = stripOption(typeExpr)
+
+	if val == nil {
+		return &parser.NilLiteral{}
+	}
+
+	if inner, isList := listInner(typeExpr); isList {
+		arr, ok := val.([]any)
+		if !ok {
+			return nil
+		}
+		elems := make([]parser.Expression, 0, len(arr))
+		for _, e := range arr {
+			if expr := interp.jsonValueToAST(e, inner); expr != nil {
+				elems = append(elems, expr)
+			}
+		}
+		return &parser.ListLiteral{Elements: elems}
+	}
+
+	if typeExpr != "" {
+		if enumDecl, ok := interp.enumDecls[typeExpr]; ok {
+			return interp.jsonValueToEnumAST(val, enumDecl)
+		}
+		if objDecl, ok := interp.objectDecls[typeExpr]; ok {
+			return interp.jsonValueToObjectAST(val, objDecl)
+		}
+	}
+
 	switch v := val.(type) {
 	case float64:
 		if v == math.Trunc(v) {
@@ -3645,13 +3719,93 @@ func jsonValueToAST(val any) parser.Expression {
 		return &parser.StringLiteral{Value: v}
 	case bool:
 		return &parser.BooleanLiteral{Value: v}
-	case nil:
-		return &parser.NilLiteral{}
+	case []any:
+		elems := make([]parser.Expression, 0, len(v))
+		for _, e := range v {
+			if expr := interp.jsonValueToAST(e, ""); expr != nil {
+				elems = append(elems, expr)
+			}
+		}
+		return &parser.ListLiteral{Elements: elems}
+	case map[string]any:
+		fields := make([]parser.ObjectLiteralField, 0, len(v))
+		for k, fv := range v {
+			if expr := interp.jsonValueToAST(fv, ""); expr != nil {
+				fields = append(fields, parser.ObjectLiteralField{Name: k, Value: expr})
+			}
+		}
+		return &parser.ObjectLiteral{Fields: fields}
 	}
 	return nil
 }
 
-// Service support
+func (interp *Interpreter) jsonValueToEnumAST(val any, decl *parser.EnumDecl) parser.Expression {
+	if s, isString := val.(string); isString {
+		return &parser.FieldAccessExpression{
+			Left:  &parser.Identifier{Value: decl.Name},
+			Field: s,
+		}
+	}
+	obj, ok := val.(map[string]any)
+	if !ok {
+		return nil
+	}
+	kindRaw, ok := obj[tool.DiscriminatorField]
+	if !ok {
+		return nil
+	}
+	kind, ok := kindRaw.(string)
+	if !ok {
+		return nil
+	}
+	var variant *parser.EnumVariant
+	for i := range decl.Variants {
+		if decl.Variants[i].Name == kind {
+			variant = &decl.Variants[i]
+			break
+		}
+	}
+	if variant == nil {
+		return nil
+	}
+
+	args := make([]parser.CallArg, 0, len(variant.Fields))
+	for _, f := range variant.Fields {
+		fv, has := obj[f.Name]
+		if !has {
+			continue
+		}
+		if expr := interp.jsonValueToAST(fv, f.TypeExpr); expr != nil {
+			args = append(args, parser.CallArg{Name: f.Name, Value: expr})
+		}
+	}
+
+	return &parser.CallExpression{
+		Function: &parser.FieldAccessExpression{
+			Left:  &parser.Identifier{Value: decl.Name},
+			Field: kind,
+		},
+		Args: args,
+	}
+}
+
+func (interp *Interpreter) jsonValueToObjectAST(val any, decl *parser.ObjectDecl) parser.Expression {
+	obj, ok := val.(map[string]any)
+	if !ok {
+		return nil
+	}
+	fields := make([]parser.ObjectLiteralField, 0, len(decl.Fields))
+	for _, f := range decl.Fields {
+		fv, has := obj[f.Name]
+		if !has {
+			continue
+		}
+		if expr := interp.jsonValueToAST(fv, f.TypeExpr); expr != nil {
+			fields = append(fields, parser.ObjectLiteralField{Name: f.Name, Value: expr})
+		}
+	}
+	return &parser.ObjectLiteral{Name: decl.Name, Fields: fields}
+}
 
 // GetServiceDecls returns all service declarations collected during evaluation.
 func (interp *Interpreter) GetServiceDecls() map[string]*parser.ServiceDecl {
@@ -3663,7 +3817,7 @@ func (interp *Interpreter) Env() *Environment {
 	return interp.env
 }
 
-// CallFunctionWithValues calls a FunctionVal in a fresh child interpreter
+// CallFunctionWithValues invokes a FunctionVal in a fresh child interpreter
 // for safe concurrent invocation (e.g. HTTP request handlers).
 func (interp *Interpreter) CallFunctionWithValues(fn *FunctionVal, args map[string]Value) (Value, error) {
 	child := &Interpreter{
@@ -3680,6 +3834,7 @@ func (interp *Interpreter) CallFunctionWithValues(fn *FunctionVal, args map[stri
 		serviceDecls:    interp.serviceDecls,
 		llmClient:       interp.llmClient,
 		capabilityStack: interp.capabilityStack,
+		fsSessionStack:  interp.fsSessionStack,
 	}
 	child.registerBuiltins()
 

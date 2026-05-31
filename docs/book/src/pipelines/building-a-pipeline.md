@@ -31,7 +31,7 @@ The pieces:
 
 ### Filtering
 
-A transform that returns `Bool` does **not** act as a filter — its
+A transform that returns `Bool` does **not** act as a filter - its
 output (a list of booleans) just flows downstream. To filter, drop
 items by returning `nil` from a transform (the runtime skips nil
 results before the next stage):
@@ -73,7 +73,7 @@ This makes each stage independently testable.
 let out = Ingest.run()
 ```
 
-Pipelines run **eagerly** today — the entire source materialises before
+Pipelines run **eagerly** today - the entire source materialises before
 transforms apply. Use bounded sources for large datasets, or chunk your
 input manually.
 

@@ -71,7 +71,7 @@ block, the original (or no) implementation applies.
 
 ## Effect propagation in practice
 
-The most common case is **not** writing custom effects — it is wiring up
+The most common case is **not** writing custom effects - it is wiring up
 the built-in ones. See [Built-in effects](./built-in-effects.md) for the
 full catalogue (`HTTP`, `DB`, `LLM`, `Log`, `JSON`, `Crypto`, `Time`, and
 the optional message-bus effects).
@@ -84,8 +84,8 @@ Tools declare a capability and require callers to grant it:
 let r = with_capability("phi_read", fn() => ReadPatient.run(mrn: "M-1"))
 ```
 
-This is conceptually the same shape as effect handling — a region of code
-runs with a named capability on the stack — but it goes through the
+This is conceptually the same shape as effect handling - a region of code
+runs with a named capability on the stack - but it goes through the
 `with_capability` builtin rather than the `handle` keyword because the
 runtime needs to enforce it dynamically (a tool may be invoked by an LLM
 at runtime, not by a function call in source). See

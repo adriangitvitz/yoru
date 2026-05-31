@@ -21,7 +21,7 @@ if x < 0 {
 ```
 
 For multi-way decisions, prefer [`match`](./enums-and-matching.md) with
-guards — it is exhaustive and the indentation stays flat.
+guards - it is exhaustive and the indentation stays flat.
 
 ## `for`
 
@@ -62,7 +62,7 @@ Same `break` and `continue` semantics as `for`.
 
 See [Enums and pattern matching](./enums-and-matching.md). `match` is the
 exhaustive, type-checked structural form. Prefer it over `if`/`else`
-chains whenever you are switching on a tagged value — and especially in
+chains whenever you are switching on a tagged value - and especially in
 place of the missing `else if`.
 
 ## Early `return`

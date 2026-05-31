@@ -28,7 +28,7 @@ Exceptions hide the control-flow graph. A function typed `Foo()` could
 throw anything. You don't know without reading the entire transitive
 call tree.
 
-Effects are stricter — they force the cost into the signature. In
+Effects are stricter - they force the cost into the signature. In
 exchange, you get:
 
 - **Testability.** Swap a real `HTTP` handler for a stub for free.
@@ -41,7 +41,7 @@ exchange, you get:
 
 `async` is a special kind of effect (suspendable computation). Languages
 that bolt async on as syntax (`async fn`, `await`) end up with the
-**function colouring** problem — once a function is async, every caller
+**function colouring** problem - once a function is async, every caller
 must be, too. Conversely, you cannot call an async function from a
 synchronous one without an `await`.
 
@@ -76,7 +76,7 @@ so you only declare them when:
 
 For internal helpers, you can often omit `effect [...]` entirely and let
 inference do the work. For tools, agents, and services, declaring effects
-is the contract — write them explicitly.
+is the contract - write them explicitly.
 
 ## Next
 

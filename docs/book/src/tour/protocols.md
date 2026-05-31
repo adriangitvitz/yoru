@@ -1,7 +1,7 @@
 # Protocols and `impl`
 
-A **protocol** is a behavioural contract — like a Go interface or a Rust
-trait — but it can also declare which effects its methods are allowed to
+A **protocol** is a behavioural contract - like a Go interface or a Rust
+trait - but it can also declare which effects its methods are allowed to
 use. Every method definition for an object goes through a protocol;
 there are no free-standing `impl Type { ... }` blocks.
 
@@ -16,7 +16,7 @@ protocol Serializable {
 
 Notes:
 
-- `self` is **bare** — no capability annotation (no `self: ref`).
+- `self` is **bare** - no capability annotation (no `self: ref`).
 - `Self` refers to the implementing type.
 - Methods may declare effects with `effect [...]`.
 

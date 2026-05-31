@@ -23,7 +23,7 @@ println(u.email)        // a@example.com
 
 Field access uses dot notation.
 
-Bare `{ key: value, ... }` literals also parse — they produce a generic
+Bare `{ key: value, ... }` literals also parse - they produce a generic
 `Object` value (the same shape `JSON.decode` returns). Use a typed
 object when you want field-level checking; use a bare literal for an
 ad-hoc record:
@@ -46,14 +46,14 @@ let archived = User {
 ```
 
 There is no spread syntax for field copy at the moment, so you list every
-field explicitly. This is verbose on purpose — it makes refactors loud.
+field explicitly. This is verbose on purpose - it makes refactors loud.
 
 ## Methods via `impl`
 
 Two impl shapes work:
 
 ```yoru
-// Plain methods — attach behaviour without a protocol.
+// Plain methods - attach behaviour without a protocol.
 impl User {
   fn display(self) -> String {
     self.email + (if self.active { " (active)" } else { " (archived)" })
@@ -64,7 +64,7 @@ println(u.display())
 ```
 
 ```yoru
-// Protocol implementation — required when callers depend on the
+// Protocol implementation - required when callers depend on the
 // behaviour-by-shape rather than the concrete type.
 protocol Display { fn show(self) -> String }
 

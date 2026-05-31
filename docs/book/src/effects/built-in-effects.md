@@ -2,7 +2,7 @@
 
 These effect names are reserved and recognised by the type-checker
 (`typechecker/checker.go`'s `defaultKnownEffects`). Provider
-installation is separate — some are wired up automatically by
+installation is separate - some are wired up automatically by
 `stdlib.InstallAll`, others are allow-listed as effect labels you may
 declare but have no runtime provider yet.
 
@@ -19,7 +19,7 @@ declare but have no runtime provider yet.
 | `LLM`        | No (surfaced via `agent` declarations)       | An `agent`'s `.chat(...)` triggers the LLM call. No direct `LLM.complete(...)` builtin exists. |
 | `Agent`, `Spawn`, `Stream`, `Metric`, `Clock` | No                          | Allow-listed effect labels. Use them to annotate functions even though no provider ships today. |
 
-Opt-in providers — auto-installed when their env var is present:
+Opt-in providers - auto-installed when their env var is present:
 
 | Effect   | Env var          | Operations                                                                                                |
 |----------|------------------|-----------------------------------------------------------------------------------------------------------|
@@ -58,5 +58,5 @@ stdlib.InstallAll(interp, os.Stderr)
 interp.EvalSourceInto(source)
 ```
 
-Providers are scoped per-interpreter — concurrent HTTP request handlers
+Providers are scoped per-interpreter - concurrent HTTP request handlers
 each get isolated state.

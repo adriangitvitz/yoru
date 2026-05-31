@@ -26,7 +26,7 @@ func installLLMClient(interp *interpreter.Interpreter) {
 	}
 }
 
-func runCmd(filename string) (exitCode int) {
+func runCmd(filename string, scriptArgs []string) (exitCode int) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %s\n", filename, err)
@@ -44,8 +44,6 @@ func runCmd(filename string) (exitCode int) {
 		return 2
 	}
 
-	// Typechecker is single-file: skip it when imports are present, else
-	// every cross-file name is flagged undefined.
 	if !hasImports(prog) {
 		c := typechecker.NewChecker()
 		res := c.Check(prog)
@@ -68,6 +66,7 @@ func runCmd(filename string) (exitCode int) {
 	interp := interpreter.NewInterpreter()
 	stdlib.InstallAll(interp, os.Stderr)
 	installLLMClient(interp)
+	interp.SetScriptArgs(scriptArgs)
 
 	interp.SetBaseDir(filepath.Dir(absPath(filename)))
 	interp.SetFileReader(&osFileReader{})
@@ -81,7 +80,6 @@ func runCmd(filename string) (exitCode int) {
 
 	_, _ = interp.EvalProgram(prog)
 
-	// Auto-invoke main() so scripts can use top-level code or a conventional entry point.
 	if hasFnMain(prog) {
 		mainL := lexer.New("main()")
 		mainP := parser.New(mainL)
@@ -89,8 +87,6 @@ func runCmd(filename string) (exitCode int) {
 		_, _ = interp.EvalProgram(mainProg)
 	}
 
-	// A service declaration auto-starts the HTTP server. ListenAndServe blocks,
-	// so this stays at the end of runCmd.
 	serviceDecls := interp.GetServiceDecls()
 	if len(serviceDecls) > 0 {
 		var decl *parser.ServiceDecl

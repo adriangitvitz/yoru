@@ -1,7 +1,7 @@
 # Tools
 
-A **tool** is a named, typed unit of capability that the runtime — or an
-LLM agent — can invoke. The compiler auto-generates the JSON Schema that
+A **tool** is a named, typed unit of capability that the runtime - or an
+LLM agent - can invoke. The compiler auto-generates the JSON Schema that
 LLMs need from the tool's input fields, so there is no documentation
 drift between the tool's signature and what the model sees.
 
@@ -28,7 +28,7 @@ tool SearchOrders {
 |---------------|-------------------------------------------------------------------------------|
 | `description` | What the tool does, in prose. Goes into the LLM tool catalogue.               |
 | `input`       | Typed input fields. Required unless they have a default or are `Option[T]`.   |
-| `output`      | Either a type expression (`output: String`) or a structured block (`output { ... }`) — see below. |
+| `output`      | Either a type expression (`output: String`) or a structured block (`output { ... }`) - see below. |
 | `effect`      | Effects the implementation may use. Enforced by the type checker.             |
 | `capability`  | Optional. Locks the tool behind a runtime capability. See [Capability scoping](./capability-scoping.md). |
 
@@ -37,7 +37,7 @@ tool SearchOrders {
 Two forms:
 
 ```yoru
-output: String                    // type expression — no validation, pass-through
+output: String                    // type expression - no validation, pass-through
 output: [OrderSummary]
 ```
 
@@ -90,7 +90,7 @@ chosen.run(args)
 
 // Iterate over tools for introspection
 for t in [Search, Refund] {
-  println(t.name() + " — " + t.description())
+  println(t.name() + " - " + t.description())
 }
 ```
 
@@ -106,7 +106,7 @@ Method dispatch on a `Tool` value:
 | `t.schema()` | Full MCP-shape tool schema as `String` |
 
 The existing `MyTool.run(...)` and `MyTool.schema()` call sites
-continue to work unchanged — they're now method calls on the
+continue to work unchanged - they're now method calls on the
 resolved value.
 
 The `run` method receives `self` (the tool instance, used for stateful
@@ -144,15 +144,17 @@ and isn't exposed to user code.)
 
 ## Input fields and JSON Schema
 
-| Yoru type        | JSON Schema                            |
-|------------------|----------------------------------------|
-| `String`         | `{"type": "string"}`                   |
-| `Int`            | `{"type": "integer"}`                  |
-| `Float`          | `{"type": "number"}`                   |
-| `Bool`           | `{"type": "boolean"}`                  |
-| `Option[T]`      | `T` plus `nullable: true`              |
-| `[T]`            | `{"type": "array", "items": ...}`      |
-| `Object`         | `{"type": "object", "properties": ...}` |
+| Yoru type            | JSON Schema |
+|----------------------|-------------|
+| `String`             | `{"type": "string"}` |
+| `Int`                | `{"type": "integer"}` |
+| `Float`              | `{"type": "number"}` |
+| `Bool`               | `{"type": "boolean"}` |
+| `Option[T]`          | Same shape as `T`, but absent from `required` |
+| `[T]`                | `{"type": "array", "items": <T>}` |
+| User `object Foo`    | `{"type": "object", "properties": ..., "required": [...]}` - recurses into each field |
+| User `enum E` (all unit variants) | `{"type": "string", "enum": [...]}` |
+| User `enum E` (with payloads)     | `{"anyOf": [...]}` with a `kind` discriminator - see below |
 
 Defaults become the `default` in the schema. `@doc("...")` annotations
 become the `description` of a field.
@@ -164,11 +166,79 @@ input {
 }
 ```
 
+## Tagged unions as tool inputs
+
+When a tool input is typed as a Yoru enum whose variants carry fields,
+the schema generator emits a JSON-Schema `anyOf` with a `kind`
+discriminator. Each variant becomes one branch in `anyOf`, the `kind`
+field is a `const` carrying the variant name, and the payload fields
+follow.
+
+```yoru
+enum PatchOp {
+  Fuzzy(old_text: String, new_text: String, count: Int),
+  Insert(line: Int, content: String),
+  Delete(start: Int, end: Int),
+}
+
+tool ApplyPatches {
+  description: "Apply ordered patches to a text file."
+  input {
+    path: String,
+    ops:  [PatchOp],
+  }
+  output: String
+  fn run(self, i: ApplyPatches.Input) -> String {
+    mut content = FS.read(i.path) ?? ""
+    for op in i.ops {
+      content = match op {
+        PatchOp.Fuzzy(o, n, c) => Fuzzy.find_replace(content, o, n, c).result,
+        PatchOp.Insert(line, text) => insert_line(content, line, text),
+        PatchOp.Delete(s, e) => delete_lines(content, s, e),
+      }
+    }
+    content
+  }
+}
+```
+
+The LLM sees `ops` as an array of `anyOf`-shaped objects:
+
+```json
+{
+  "type": "array",
+  "items": {
+    "anyOf": [
+      {"type": "object", "properties": {"kind": {"const": "Fuzzy"}, "old_text": {"type":"string"}, "new_text": {"type":"string"}, "count": {"type":"integer"}}, "required": ["kind","old_text","new_text","count"]},
+      {"type": "object", "properties": {"kind": {"const": "Insert"}, "line": {"type":"integer"}, "content": {"type":"string"}}, "required": ["kind","line","content"]},
+      {"type": "object", "properties": {"kind": {"const": "Delete"}, "start": {"type":"integer"}, "end": {"type":"integer"}}, "required": ["kind","start","end"]}
+    ]
+  }
+}
+```
+
+The model then sends, for example:
+
+```json
+{"path": "/tmp/x.txt", "ops": [
+  {"kind": "Fuzzy", "old_text": "old", "new_text": "new", "count": 0},
+  {"kind": "Delete", "start": 5, "end": 7}
+]}
+```
+
+The runtime reconstructs each element as an `EnumVal` of the right
+variant before `fn run` observes it - including recursion into nested
+object or enum types. Wrong/missing `kind`, unknown variant, or
+missing required payload fields surface as `Result.Err{kind:
+"tool_invocation_failed"}` with a precise message ("variant
+'PatchOp.Insert' missing field 'line'") that the agent can recover
+from on the next turn.
+
 ## When to make something a tool
 
 - An LLM agent should be able to call it.
 - You want it exposed over MCP.
-- It is a discrete capability with a name worth knowing — not a private
+- It is a discrete capability with a name worth knowing - not a private
   helper.
 
 For internal helpers, a plain `fn` is enough.

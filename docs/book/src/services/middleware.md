@@ -79,7 +79,7 @@ service API {
 }
 ```
 
-User registrations **override** built-ins with the same name — useful
+User registrations **override** built-ins with the same name - useful
 for replacing the stock `Logger` with one that talks to your structured
 log pipeline. To remove a registration (mostly for tests), call
 `service.UnregisterMiddleware("Name")`.

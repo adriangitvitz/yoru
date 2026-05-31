@@ -7,7 +7,7 @@ language constructs rather than libraries.
 
 This book is a hands-on tour for someone who has never written a line of
 Yoru. It assumes you can read code in any C-family language (Go, Rust, Swift,
-TypeScript, Python) — no prior experience with effect systems, actor models,
+TypeScript, Python) - no prior experience with effect systems, actor models,
 or capabilities is required.
 
 ## What you will learn
@@ -24,7 +24,7 @@ By the end of this book you will be able to:
 - Declare **tools**, wire them into an **agent**, and expose them through an
   **MCP server** that Claude Desktop can call.
 - Stand up an HTTP **service** with middleware, JWT auth, and rate
-  limiting — all in a single `.yr` file.
+  limiting - all in a single `.yr` file.
 
 ## How this book is organized
 
@@ -45,5 +45,5 @@ removed.
 
 ## Where to go next
 
-- [Install Yoru](./getting-started/installation.md) — five minutes.
-- [Hello, Yoru](./getting-started/hello-yoru.md) — your first program.
+- [Install Yoru](./getting-started/installation.md) - five minutes.
+- [Hello, Yoru](./getting-started/hello-yoru.md) - your first program.

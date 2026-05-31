@@ -53,7 +53,7 @@ println(to_string(n))      // 6
 `.ask` returns a symmetric `Result`. Three idiomatic ways to consume it:
 
 ```yoru
-// 1. `?` propagates the timeout up — clean inside any function returning Result.
+// 1. `?` propagates the timeout up - clean inside any function returning Result.
 fn current(c) -> Int {
   let n = c.ask(GetCount)?
   n
@@ -70,7 +70,7 @@ match c.ask(GetCount) {
 ```
 
 If the actor's `receive` body itself returns a `Result`, `.ask` passes
-it through without double-wrapping — so `actor.ask(M)` is always the
+it through without double-wrapping - so `actor.ask(M)` is always the
 same `Result` shape callers expect.
 
 ## The Isolated Turn Principle
